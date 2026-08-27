@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.env
+
+# Real candidate/company data -- contains real PII (names, emails, phone
+# numbers), or is external reference data too large/not-ours to publish.
+# Never commit these.
+rebee_client_*.json
+data/candidates_raw.json
+data/candidates.json
+company_ranks.json
+companyDetection.json
+master_universities.csv
+Location.json
+university_abbs.json
+
+# A separate, pre-existing prototype app pulled in for reference/investigation
+# this session -- not code we wrote, and its .env files hold real API keys
+# (OpenAI, Groq, Gemini, MongoDB URIs). Never commit it.
+prototype/

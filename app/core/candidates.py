@@ -1,0 +1,398 @@
+"""Candidate data provider.
+
+Loads REAL matched-candidate data, joined from two real DB exports:
+  - `rebee_client_rebeeai.parsedresumes.json`  -- resume content (skills,
+    location, education, experience) per `processId`.
+  - `rebee_client_rebeeai.jdmatchresults.json` -- per-(processId, jdId) match
+    scores (`rankingScore` etc), i.e. one row per candidate PER JOB.
+
+A candidate is only searchable for a job if they have a `completed` match
+result for that job's `jdId` -- this is real per-job scoping, not a
+placeholder. `job_id` may be either the internal `jdId` (Mongo ObjectId hex,
+what the real matching API keys on) or the human-facing `jobId` string
+(e.g. "00000084") -- both are indexed.
+
+Replace this module with your real DB / matching-service query in production.
+"""
+from __future__ import annotations
+
+import csv
+import json
+import os
+import re
+from functools import lru_cache
+
+from app.core.vocabulary import EDUCATION_RANK_LABELS, education_rank
+
+_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
+_PARSED_RESUMES_PATH = os.getenv(
+    "PARSED_RESUMES_PATH",
+    os.path.join(_ROOT, "rebee_client_rebeeai.parsedresumes.json"),
+)
+_JD_MATCH_RESULTS_PATH = os.getenv(
+    "JD_MATCH_RESULTS_PATH",
+    os.path.join(_ROOT, "rebee_client_rebeeai.jdmatchresults.json"),
+)
+_MASTER_UNIVERSITIES_PATH = os.getenv(
+    "MASTER_UNIVERSITIES_PATH",
+    os.path.join(_ROOT, "master_universities.csv"),
+)
+_COMPANY_RANKS_PATH = os.getenv(
+    "COMPANY_RANKS_PATH",
+    os.path.join(_ROOT, "company_ranks.json"),
+)
+_LOCATION_JSON_PATH = os.getenv(
+    "LOCATION_JSON_PATH",
+    os.path.join(_ROOT, "Location.json"),
+)
+
+# Location normalisation: primarily a real lookup against Location.json
+# (151k real cities across 210 countries), falling back to a crude heuristic
+# (strip a trailing state/country token) only when nothing in the gazetteer
+# matches. The gazetteer pass also fixes cases the old heuristic alone
+# couldn't -- e.g. "Mumbai Maharashtra" and "Mumbai" now resolve to the same
+# canonical "Mumbai" instead of silently fragmenting into two location values.
+_US_STATE_ABBR = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY",
+}
+_TRAILING_REGIONS = {
+    "ohio", "california", "illinois", "texas", "georgia",
+    "india", "usa", "us", "united states", "sudan", "uk", "united kingdom",
+    "canada", "australia", "germany", "singapore", "uae",
+    "united arab emirates",
+}
+
+
+@lru_cache(maxsize=1)
+def _load_city_gazetteer() -> dict[str, str]:
+    """lowercased real city name -> canonical city name, from Location.json."""
+    lookup: dict[str, str] = {}
+    if not os.path.isfile(_LOCATION_JSON_PATH):
+        return lookup
+    with open(_LOCATION_JSON_PATH, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            name = d.get("name")
+            if isinstance(name, str) and name.strip():
+                lookup.setdefault(name.strip().lower(), name.strip())
+    return lookup
+
+
+def _normalize_location(raw: str | None) -> str | None:
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+
+    # Try the longest real-city match first, so multi-word cities ("Navi
+    # Mumbai") resolve whole rather than truncated. Require >=3 chars so a
+    # garbage fragment ("NO, 39") can't coincidentally hit some obscure
+    # 2-letter place name in a 151k-row gazetteer.
+    words = [w for w in re.split(r"[,\s]+", s) if w]
+    gazetteer = _load_city_gazetteer()
+    for end in range(len(words), 0, -1):
+        candidate = " ".join(words[:end])
+        if len(candidate) < 3:
+            continue
+        canon = gazetteer.get(candidate.lower())
+        if canon:
+            return canon
+
+    # Fall back to the old heuristic for anything the gazetteer doesn't
+    # recognise verbatim.
+    if "," in s:
+        city = s.split(",")[0].strip()
+        return city or None
+    parts = s.split()
+    if len(parts) >= 2:
+        last = parts[-1]
+        if last.upper() in _US_STATE_ABBR or last.lower() in _TRAILING_REGIONS:
+            city = " ".join(parts[:-1]).strip()
+            return city or None
+    return s
+
+
+_DURATION_RE = re.compile(
+    r"(?:(\d+)\s*years?)?\s*(?:(\d+)\s*months?)?", re.IGNORECASE
+)
+
+
+def _total_experience_years(total_experience: str | None) -> float | None:
+    if not total_experience:
+        return None
+    m = _DURATION_RE.search(total_experience)
+    if not m or (m.group(1) is None and m.group(2) is None):
+        return None
+    years = int(m.group(1) or 0)
+    months = int(m.group(2) or 0)
+    return round(years + months / 12, 1)
+
+
+def _highest_education(education: list[dict]) -> str | None:
+    ranks = [education_rank(entry.get("degree")) for entry in education or []]
+    ranks = [r for r in ranks if r is not None]
+    return EDUCATION_RANK_LABELS.get(max(ranks)) if ranks else None
+
+
+# College-tier matching: resumes carry messy free-text university names
+# ("KJ Somaiya School of Engineering, Mumbai, India") that rarely match
+# master_universities.csv's canonical names ("SOMAIYA VIDYAVIHAR UNIVERSITY")
+# exactly. Best-effort fuzzy match: try the full normalised name first, then
+# fall back to a distinctive-keyword overlap. Not a geocoder-grade matcher --
+# returns None (no tier) rather than guessing when nothing lines up.
+_INSTITUTION_STOPWORDS = {
+    "college", "university", "institute", "school", "of", "the", "and",
+    "engineering", "arts", "science", "commerce", "management", "technology",
+    "india", "for", "in", "polytechnic", "academy", "degree", "womens",
+    "mens", "college's",
+}
+_TIER_RANK = {"Low": 1, "Medium": 2, "High": 3}
+
+
+def _normalize_institution(text: str) -> str:
+    text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+@lru_cache(maxsize=1)
+def _load_university_tiers() -> tuple[dict[str, str], dict[str, str]]:
+    """Returns (exact_name -> tier, distinctive_keyword -> tier)."""
+    exact: dict[str, str] = {}
+    keywords: dict[str, str] = {}
+    if not os.path.isfile(_MASTER_UNIVERSITIES_PATH):
+        return exact, keywords
+    with open(_MASTER_UNIVERSITIES_PATH, "r", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            tier = (row.get("Tier") or "").strip()
+            if tier not in ("Low", "Medium", "High"):
+                continue
+            norm = _normalize_institution(row.get("institution_name") or "")
+            if not norm:
+                continue
+            exact.setdefault(norm, tier)
+            for word in norm.split():
+                if len(word) >= 5 and word not in _INSTITUTION_STOPWORDS:
+                    keywords.setdefault(word, tier)
+    return exact, keywords
+
+
+def _college_tier_for(university_names: list[str]) -> str | None:
+    if not university_names:
+        return None
+    exact, keywords = _load_university_tiers()
+
+    best_rank, best_tier = 0, None
+    for raw in university_names:
+        norm = _normalize_institution(raw)
+        if not norm:
+            continue
+        tier = exact.get(norm)
+        if tier is None:
+            for word in norm.split():
+                if len(word) >= 5 and word not in _INSTITUTION_STOPWORDS and word in keywords:
+                    tier = keywords[word]
+                    break
+        if tier and _TIER_RANK[tier] > best_rank:
+            best_rank, best_tier = _TIER_RANK[tier], tier
+    return best_tier
+
+
+# Company-tier matching: company_ranks.json has ~7M rows (862MB) -- keeping
+# all of it resident in memory would be wasteful (est. 1GB+) for what is, in
+# practice, a lookup against the few thousand company names that actually
+# appear in our resumes. So: collect the company names we actually need
+# first, then stream the file once and keep only matching rows. Exact-name
+# match only (no keyword fallback like universities) -- company_ranks.json
+# is dominated by small/local businesses with generic overlapping words
+# ("solutions", "group", "services"), where fuzzy keyword matching would
+# produce real false positives, unlike the much smaller, more distinctive
+# university list.
+_COMPANY_SUFFIX_RE = re.compile(
+    r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|plc|pvt|private)\b\.?"
+)
+
+
+def _normalize_company(text: str) -> str:
+    text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    text = _COMPANY_SUFFIX_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _needed_company_names(raw_records: list[dict]) -> set[str]:
+    names = set()
+    for r in raw_records:
+        for e in r.get("experience") or []:
+            c = e.get("company")
+            if isinstance(c, str) and c.strip():
+                norm = _normalize_company(c)
+                if norm:
+                    names.add(norm)
+    return names
+
+
+@lru_cache(maxsize=1)
+def _load_company_tiers() -> dict[str, str]:
+    needed = _needed_company_names(_load_raw_resumes())
+    exact: dict[str, str] = {}
+    if not needed or not os.path.isfile(_COMPANY_RANKS_PATH):
+        return exact
+    with open(_COMPANY_RANKS_PATH, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            name, tier = d.get("name"), d.get("company_tier")
+            if not isinstance(name, str) or tier not in ("LOW", "MEDIUM", "HIGH"):
+                continue  # also drops the malformed non-tier junk values seen in this file
+            norm = _normalize_company(name)
+            if norm in needed:
+                exact.setdefault(norm, tier.title())  # -> "Low"/"Medium"/"High", matching college_tier's casing
+    return exact
+
+
+def _company_tier_for(company_names: list[str]) -> str | None:
+    if not company_names:
+        return None
+    exact = _load_company_tiers()
+    best_rank, best_tier = 0, None
+    for raw in company_names:
+        tier = exact.get(_normalize_company(raw))
+        if tier and _TIER_RANK[tier] > best_rank:
+            best_rank, best_tier = _TIER_RANK[tier], tier
+    return best_tier
+
+
+def _current_location(personal: dict, experience: list[dict]) -> str | None:
+    # Prefer the resume's own stated location over one inferred from job
+    # history -- more direct, less guesswork.
+    direct = _normalize_location(personal.get("personal_location"))
+    if direct:
+        return direct
+    ongoing = [e for e in experience if e.get("is_ongoing")]
+    for entry in ongoing + experience:
+        loc = _normalize_location(entry.get("current_location") or entry.get("location"))
+        if loc:
+            return loc
+    return None
+
+
+def _adapt_resume(raw: dict) -> dict:
+    personal = raw.get("personalInfo", {}) or {}
+    experience = raw.get("experience", []) or []
+    education = raw.get("education", []) or []
+
+    skills = list(dict.fromkeys(raw.get("skillsNormalized") or raw.get("skills") or []))
+    universities = list(dict.fromkeys(
+        (e.get("university") or "").strip() for e in education if e.get("university")
+    ))
+    companies = list(dict.fromkeys(
+        (e.get("company") or "").strip() for e in experience if e.get("company")
+    ))
+
+    candidate = {
+        "id": raw.get("processId"),
+        "name": personal.get("name"),
+        "location": _current_location(personal, experience),
+        "experience": _total_experience_years(raw.get("totalExperience")),
+        "education": _highest_education(education),
+        "university": universities,
+        "college_tier": _college_tier_for(universities),
+        "company": companies,
+        "company_tier": _company_tier_for(companies),
+        "skills": skills,
+    }
+    # Drop keys with no data rather than asserting a false "field is present".
+    return {k: v for k, v in candidate.items() if v not in (None, [], "")}
+
+
+@lru_cache(maxsize=1)
+def _load_raw_resumes() -> list[dict]:
+    with open(_PARSED_RESUMES_PATH, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@lru_cache(maxsize=1)
+def _load_resumes_by_process_id() -> dict[str, dict]:
+    raw_records = _load_raw_resumes()
+    return {r["processId"]: _adapt_resume(r) for r in raw_records if r.get("processId")}
+
+
+@lru_cache(maxsize=1)
+def _load_matches_by_job() -> dict[str, list[dict]]:
+    """Join match results onto resume content, grouped by job. Only
+    `completed` matches are included -- a failed match has no real score, so
+    surfacing one would be worse than omitting the candidate for that job."""
+    resumes = _load_resumes_by_process_id()
+
+    with open(_JD_MATCH_RESULTS_PATH, "r", encoding="utf-8") as fh:
+        raw_matches = json.load(fh)
+
+    by_job: dict[str, list[dict]] = {}
+    for m in raw_matches:
+        if m.get("status") != "completed":
+            continue
+        process_id = m.get("processId")
+        resume = resumes.get(process_id)
+        if resume is None:
+            continue
+
+        candidate = dict(resume)
+        candidate["match_score"] = m.get("rankingScore", 0)
+
+        jd_id = (m.get("jdId") or {}).get("$oid")
+        job_id = m.get("jobId")
+        for key in (jd_id, job_id):
+            if key:
+                by_job.setdefault(key, []).append(candidate)
+
+    return by_job
+
+
+def get_matched_candidates(job_id: str) -> list[dict]:
+    """Real per-job matched candidates: everyone with a completed match
+    result against this job (looked up by either internal jdId or the
+    human-facing jobId), each carrying their real rankingScore as
+    `match_score`. Empty list if the job has no completed matches."""
+    return _load_matches_by_job().get(job_id, [])
+
+
+def get_available_fields(job_id: str) -> set[str]:
+    """Infer which filterable fields the dataset actually provides, so we never
+    invent attributes. Maps raw candidate keys onto vocabulary field names."""
+    candidates = get_matched_candidates(job_id)
+    available: set[str] = set()
+    for c in candidates:
+        if "location" in c:
+            available.add("location")
+        if "experience" in c:
+            available.add("experience")
+        if "education" in c:
+            available.add("education")
+        if "university" in c:
+            available.add("university")
+        if "college_tier" in c:
+            available.add("college_tier")
+        if "company" in c:
+            available.add("company")
+        if "company_tier" in c:
+            available.add("company_tier")
+        if "relocation" in c:
+            available.add("relocation")
+        if any(k in c for k in ("notice_period_days", "notice_period")):
+            available.add("notice_period")
+        if "skills" in c:
+            available.add("skill")
+    return available
