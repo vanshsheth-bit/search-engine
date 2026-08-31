@@ -11,6 +11,7 @@ from app.core.engine import apply_spec
 from app.core.lookup import answer_lookup, resolve_candidate
 from app.core.merge import merge_filters, to_chips
 from app.core.session import SessionStore, default_store
+from app.core.skill_taxonomy import expand_skill_filters
 from app.core.validation import validate_filters
 from app.llm.client import LLMClient
 from app.models.schemas import (
@@ -93,8 +94,12 @@ class FilterService:
         if llm_out.intent == "LOOKUP":
             return self._answer_lookup(llm_out, current, spec, job_id, session_id)
 
-        # FILTER_CANDIDATES
-        merged = merge_filters(spec.filters, llm_out.filters)
+        # FILTER_CANDIDATES. Expand skill concepts ("machine learning" ->
+        # its real tools) against the curated taxonomy before merging into
+        # session state, so what gets stored/matched is already the precise
+        # expansion, not the bare concept term.
+        expanded_filters = expand_skill_filters(llm_out.filters)
+        merged = merge_filters(spec.filters, expanded_filters)
         return self._validate_apply_persist(
             merged, llm_out.logic, job_id, session_id
         )

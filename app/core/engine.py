@@ -72,6 +72,19 @@ def _op_contains(cand, val, substring_for_list: bool = False) -> bool:
     return str(val).lower() in str(cand).lower()
 
 
+def _op_in(cand, values, substring_for_list: bool = False) -> bool:
+    """"in" against a LIST-valued candidate field (skill/university/company/...)
+    means "does the candidate have ANY of these values", checked per-item the
+    same way "contains" is -- NOT a naive str(whole_list) == str(one_value)
+    comparison, which would compare a stringified list against a single term
+    and (correctly) almost never match. Needed for skill-concept expansion:
+    a candidate matches "in" a list like ["machine learning", "tensorflow",
+    "pytorch"] if their skills contain ANY one of those, not all of them."""
+    if isinstance(cand, (list, tuple, set)):
+        return any(_op_contains(cand, v, substring_for_list=substring_for_list) for v in values)
+    return any(_op_equals(cand, v) for v in values)
+
+
 OPERATORS = {
     "equals": _op_equals,
     "not_equals": lambda c, v: not _op_equals(c, v),
@@ -176,6 +189,9 @@ def matches_filter(candidate: dict, f: Filter) -> bool:
         if f.operator in {"contains", "not_contains"}:
             hit = _op_contains(value, f.value, substring_for_list=f.field in _FREE_TEXT_LIST_FIELDS)
             return hit if f.operator == "contains" else not hit
+        if f.operator in {"in", "not_in"} and isinstance(value, (list, tuple, set)):
+            hit = _op_in(value, f.value, substring_for_list=f.field in _FREE_TEXT_LIST_FIELDS)
+            return hit if f.operator == "in" else not hit
         return op(value, f.value)
     except (ValueError, TypeError):
         return False

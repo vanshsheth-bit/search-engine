@@ -45,8 +45,18 @@ def chip_label(f: Filter) -> str:
         unit = f.unit or "days"
         return f"{icon} Notice {sym} {f.value} {unit}".strip()
     if f.field == "skill":
-        prefix = "No " if f.operator in {"not_contains", "not_equals"} else ""
-        return f"{icon} {prefix}{f.value}".strip()
+        prefix = "No " if f.operator in {"not_contains", "not_in"} else ""
+        # A skill concept expanded via the taxonomy (e.g. "machine learning"
+        # -> its real tools) carries a LIST here, not a single string --
+        # show the representative (first/canonical) term plus a count rather
+        # than a raw Python list repr.
+        if isinstance(f.value, list):
+            label = str(f.value[0]) if f.value else ""
+            if len(f.value) > 1:
+                label += f" +{len(f.value) - 1} more"
+        else:
+            label = f.value
+        return f"{icon} {prefix}{label}".strip()
     if f.field == "relocation":
         return f"{icon} Willing to relocate"
     if f.field == "college_tier":

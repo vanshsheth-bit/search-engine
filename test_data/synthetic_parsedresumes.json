@@ -1,0 +1,1372 @@
+[
+  {
+    "processId": "proc_synth_001",
+    "personalInfo": {
+      "name": "Priya Nair",
+      "email": "proc_synth_001@example-test.invalid",
+      "phone": "",
+      "personal_location": "Bengaluru",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "6 years 2 months",
+    "experience": [
+      {
+        "position": "Machine Learning Engineer",
+        "company": "Google",
+        "date": "Jun 2019 - Present",
+        "start_date": "Jun 2019",
+        "end_date": "Present",
+        "duration_years": 6.2,
+        "duration_months": 74,
+        "duration_display": "6.2 years",
+        "is_ongoing": true,
+        "description": "Worked as Machine Learning Engineer at Google.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Master of Technology (Computer Science)",
+        "university": "Indian Institute of Technology Bombay",
+        "year": "2019",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [
+      {
+        "name": "AWS Certified Machine Learning - Specialty"
+      }
+    ],
+    "skillsNormalized": [
+      "TensorFlow",
+      "PyTorch",
+      "Docker",
+      "AWS",
+      "Python",
+      "Kubernetes"
+    ]
+  },
+  {
+    "processId": "proc_synth_002",
+    "personalInfo": {
+      "name": "Priya Sharma",
+      "email": "proc_synth_002@example-test.invalid",
+      "phone": "",
+      "personal_location": "Delhi",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "3 years",
+    "experience": [
+      {
+        "position": "UI Developer",
+        "company": "Zomato",
+        "date": "Jan 2022 - Present",
+        "start_date": "Jan 2022",
+        "end_date": "Present",
+        "duration_years": 3.0,
+        "duration_months": 36,
+        "duration_display": "3.0 years",
+        "is_ongoing": true,
+        "description": "Worked as UI Developer at Zomato.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Computer Science)",
+        "university": "Delhi Technological University",
+        "year": "2021",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Vue.js",
+      "Tailwind CSS",
+      "TypeScript",
+      "Figma"
+    ]
+  },
+  {
+    "processId": "proc_synth_003",
+    "personalInfo": {
+      "name": "Priya Sharma",
+      "email": "proc_synth_003@example-test.invalid",
+      "phone": "",
+      "personal_location": "Mumbai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "8 years",
+    "experience": [
+      {
+        "position": "Backend Engineer",
+        "company": "Flipkart",
+        "date": "Mar 2016 - Present",
+        "start_date": "Mar 2016",
+        "end_date": "Present",
+        "duration_years": 8.0,
+        "duration_months": 96,
+        "duration_display": "8.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Backend Engineer at Flipkart.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Information Technology)",
+        "university": "University of Mumbai",
+        "year": "2015",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Java",
+      "Spring Boot",
+      "PostgreSQL",
+      "Kafka"
+    ]
+  },
+  {
+    "processId": "proc_synth_004",
+    "personalInfo": {
+      "name": "Arjun Verma",
+      "email": "proc_synth_004@example-test.invalid",
+      "phone": "",
+      "personal_location": "Bombay",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "5 years",
+    "experience": [
+      {
+        "position": "Site Reliability Engineer",
+        "company": "Swiggy",
+        "date": "Jul 2020 - Present",
+        "start_date": "Jul 2020",
+        "end_date": "Present",
+        "duration_years": 5.0,
+        "duration_months": 60,
+        "duration_display": "5.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Site Reliability Engineer at Swiggy.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Electronics)",
+        "university": "Mumbai University",
+        "year": "2019",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Kubernetes",
+      "Terraform",
+      "Ansible",
+      "Jenkins",
+      "Prometheus"
+    ]
+  },
+  {
+    "processId": "proc_synth_005",
+    "personalInfo": {
+      "name": "Rohan Iyer",
+      "email": "proc_synth_005@example-test.invalid",
+      "phone": "",
+      "personal_location": "Bangalore",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "4 years",
+    "experience": [
+      {
+        "position": "Cloud Engineer",
+        "company": "Infosys",
+        "date": "Jun 2021 - Present",
+        "start_date": "Jun 2021",
+        "end_date": "Present",
+        "duration_years": 4.0,
+        "duration_months": 48,
+        "duration_display": "4.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Cloud Engineer at Infosys.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Computer Science)",
+        "university": "R.V. College of Engineering",
+        "year": "2020",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "AWS",
+      "Azure",
+      "Google Cloud Platform",
+      "Cloud Computing"
+    ]
+  },
+  {
+    "processId": "proc_synth_006",
+    "personalInfo": {
+      "name": "Kavya Reddy",
+      "email": "proc_synth_006@example-test.invalid",
+      "phone": "",
+      "personal_location": "Navi-Mumbai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "2 years",
+    "experience": [
+      {
+        "position": "Data Analyst",
+        "company": "Tata Consultancy Services",
+        "date": "Jan 2023 - Present",
+        "start_date": "Jan 2023",
+        "end_date": "Present",
+        "duration_years": 2.0,
+        "duration_months": 24,
+        "duration_display": "2.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Data Analyst at Tata Consultancy Services.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Science (Statistics)",
+        "university": "Mumbai University",
+        "year": "2022",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "SQL",
+      "Power BI",
+      "Excel",
+      "Python"
+    ]
+  },
+  {
+    "processId": "proc_synth_007",
+    "personalInfo": {
+      "name": "Sanjay Kulkarni",
+      "email": "proc_synth_007@example-test.invalid",
+      "phone": "",
+      "personal_location": "Pune",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "7 years",
+    "experience": [
+      {
+        "position": "DevOps Lead",
+        "company": "Wipro",
+        "date": "Jan 2020 - Present",
+        "start_date": "Jan 2020",
+        "end_date": "Present",
+        "duration_years": 4.5,
+        "duration_months": 54,
+        "duration_display": "4.5 years",
+        "is_ongoing": true,
+        "description": "Worked as DevOps Lead at Wipro.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Systems Engineer",
+        "company": "Persistent Systems",
+        "date": "Jan 2017 - Jun 2019",
+        "start_date": "Jan 2017",
+        "end_date": "Jun 2019",
+        "duration_years": 2.5,
+        "duration_months": 30,
+        "duration_display": "2.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Systems Engineer at Persistent Systems.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Computer Engineering)",
+        "university": "Pune University",
+        "year": "2016",
+        "gpa": ""
+      }
+    ],
+    "gaps": [
+      {
+        "gap_months": 6,
+        "gap_years": 0.5,
+        "gap_display": "6 months",
+        "from": "Jun 2019",
+        "to": "Jan 2020",
+        "after": {
+          "company": "Persistent Systems",
+          "position": "Systems Engineer",
+          "end_date": "Jun 2019"
+        },
+        "before": {
+          "company": "Wipro",
+          "position": "DevOps Lead",
+          "start_date": "Jan 2020"
+        }
+      }
+    ],
+    "certifications": [],
+    "skillsNormalized": [
+      "Docker",
+      "Jenkins",
+      "AWS",
+      "Linux"
+    ]
+  },
+  {
+    "processId": "proc_synth_008",
+    "personalInfo": {
+      "name": "Meera Pillai",
+      "email": "proc_synth_008@example-test.invalid",
+      "phone": "",
+      "personal_location": "Chennai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "5 years",
+    "experience": [
+      {
+        "position": "Full Stack Developer",
+        "company": "Zoho",
+        "date": "Jun 2019 - Present",
+        "start_date": "Jun 2019",
+        "end_date": "Present",
+        "duration_years": 5.0,
+        "duration_months": 60,
+        "duration_display": "5.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Full Stack Developer at Zoho.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Information Technology)",
+        "university": "Anna University",
+        "year": "2019",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "React",
+      "Node.js",
+      "MongoDB",
+      "Express"
+    ]
+  },
+  {
+    "processId": "proc_synth_009",
+    "personalInfo": {
+      "name": "Vikram Nair",
+      "email": "proc_synth_009@example-test.invalid",
+      "phone": "",
+      "personal_location": "Hyderabad",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "12 years",
+    "experience": [
+      {
+        "position": "Engineering Manager",
+        "company": "Infosys BPM Division, Bangalore",
+        "date": "Jan 2023 - Present",
+        "start_date": "Jan 2023",
+        "end_date": "Present",
+        "duration_years": 1.5,
+        "duration_months": 18,
+        "duration_display": "1.5 years",
+        "is_ongoing": true,
+        "description": "Worked as Engineering Manager at Infosys BPM Division, Bangalore.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Principal Engineer",
+        "company": "Cognizant Technology Solutions India",
+        "date": "Jun 2020 - Dec 2022",
+        "start_date": "Jun 2020",
+        "end_date": "Dec 2022",
+        "duration_years": 2.5,
+        "duration_months": 30,
+        "duration_display": "2.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Principal Engineer at Cognizant Technology Solutions India.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Senior Engineer",
+        "company": "Capgemini",
+        "date": "Mar 2018 - May 2020",
+        "start_date": "Mar 2018",
+        "end_date": "May 2020",
+        "duration_years": 2.2,
+        "duration_months": 26,
+        "duration_display": "2.2 years",
+        "is_ongoing": false,
+        "description": "Worked as Senior Engineer at Capgemini.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Software Engineer",
+        "company": "Mindtree",
+        "date": "Jan 2016 - Feb 2018",
+        "start_date": "Jan 2016",
+        "end_date": "Feb 2018",
+        "duration_years": 2.1,
+        "duration_months": 25,
+        "duration_display": "2.1 years",
+        "is_ongoing": false,
+        "description": "Worked as Software Engineer at Mindtree.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Associate Engineer",
+        "company": "Mphasis",
+        "date": "Jul 2013 - Dec 2015",
+        "start_date": "Jul 2013",
+        "end_date": "Dec 2015",
+        "duration_years": 2.5,
+        "duration_months": 30,
+        "duration_display": "2.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Associate Engineer at Mphasis.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Computer Science)",
+        "university": "Osmania University",
+        "year": "2013",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Java",
+      "Microservices",
+      "Spring",
+      "Docker"
+    ]
+  },
+  {
+    "processId": "proc_synth_010",
+    "personalInfo": {
+      "name": "Ananya Desai",
+      "email": "proc_synth_010@example-test.invalid",
+      "phone": "",
+      "personal_location": "Ahmedabad",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "3 years",
+    "experience": [
+      {
+        "position": "QA Engineer",
+        "company": "L&T Infotech",
+        "date": "Jun 2021 - Present",
+        "start_date": "Jun 2021",
+        "end_date": "Present",
+        "duration_years": 3.0,
+        "duration_months": 36,
+        "duration_display": "3.0 years",
+        "is_ongoing": true,
+        "description": "Worked as QA Engineer at L&T Infotech.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "B.Tech (Hons.)",
+        "university": "Engineering College",
+        "year": "2021",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Selenium",
+      "Java",
+      "TestNG",
+      "JIRA"
+    ]
+  },
+  {
+    "processId": "proc_synth_011",
+    "personalInfo": {
+      "name": "Karthik Subramaniam",
+      "email": "proc_synth_011@example-test.invalid",
+      "phone": "",
+      "personal_location": "Chennai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "10 years",
+    "experience": [
+      {
+        "position": "Research Scientist",
+        "company": "Tata Consultancy Services",
+        "date": "Jan 2018 - Present",
+        "start_date": "Jan 2018",
+        "end_date": "Present",
+        "duration_years": 7.0,
+        "duration_months": 84,
+        "duration_display": "7.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Research Scientist at Tata Consultancy Services.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Science (Physics)",
+        "university": "University of Madras",
+        "year": "2011",
+        "gpa": ""
+      },
+      {
+        "degree": "Doctor of Philosophy (Computer Science)",
+        "university": "Indian Institute of Science",
+        "year": "2017",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Python",
+      "Research",
+      "Machine Learning",
+      "Statistics"
+    ]
+  },
+  {
+    "processId": "proc_synth_012",
+    "personalInfo": {
+      "name": "Fatima Khan",
+      "email": "proc_synth_012@example-test.invalid",
+      "phone": "",
+      "personal_location": "Hyderabad",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "4 years",
+    "experience": [
+      {
+        "position": "Frontend Developer",
+        "company": "Myntra",
+        "date": "Jun 2021 - Present",
+        "start_date": "Jun 2021",
+        "end_date": "Present",
+        "duration_years": 4.0,
+        "duration_months": 48,
+        "duration_display": "4.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Frontend Developer at Myntra.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "JNTU Hyderabad",
+        "year": "2020",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "react.js",
+      "ReactJS",
+      "React JS",
+      "JavaScript",
+      "CSS3"
+    ]
+  },
+  {
+    "processId": "proc_synth_013",
+    "personalInfo": {
+      "name": "David Chen",
+      "email": "proc_synth_013@example-test.invalid",
+      "phone": "",
+      "personal_location": "Bengaluru",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "9 years",
+    "experience": [
+      {
+        "position": "Data Engineer",
+        "company": "Oracle",
+        "date": "Jan 2016 - Present",
+        "start_date": "Jan 2016",
+        "end_date": "Present",
+        "duration_years": 9.0,
+        "duration_months": 108,
+        "duration_display": "9.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Data Engineer at Oracle.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Computer Science)",
+        "university": "PES University",
+        "year": "2015",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [
+      {
+        "name": "Certifications: AWS Certified Data Analytics - Specialty, Databricks Certified Data Engineer Associate, and Cloudera Certified Administrator for Apache Hadoop"
+      }
+    ],
+    "skillsNormalized": [
+      "Spark",
+      "Hadoop",
+      "AWS",
+      "Python"
+    ]
+  },
+  {
+    "processId": "proc_synth_014",
+    "personalInfo": {
+      "name": "Neha Agarwal",
+      "email": "proc_synth_014@example-test.invalid",
+      "phone": "",
+      "personal_location": "Gurgaon",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "6 years",
+    "experience": [
+      {
+        "position": "Senior Consultant",
+        "company": "Ernst & Young (EY)",
+        "date": "Jul 2018 - Present",
+        "start_date": "Jul 2018",
+        "end_date": "Present",
+        "duration_years": 6.0,
+        "duration_months": 72,
+        "duration_display": "6.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Senior Consultant at Ernst & Young (EY).",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Master of Business Administration (Finance)",
+        "university": "Indian Institute of Management Ahmedabad",
+        "year": "2018",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Financial Modeling",
+      "Excel",
+      "SQL",
+      "Tableau"
+    ]
+  },
+  {
+    "processId": "proc_synth_015",
+    "personalInfo": {
+      "name": "Rahul Mehta",
+      "email": "proc_synth_015@example-test.invalid",
+      "phone": "",
+      "personal_location": "Jaipur",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "5 years",
+    "experience": [
+      {
+        "position": "Independent Consultant",
+        "company": "Self-employed / Freelance",
+        "date": "Jan 2021 - Present",
+        "start_date": "Jan 2021",
+        "end_date": "Present",
+        "duration_years": 4.0,
+        "duration_months": 48,
+        "duration_display": "4.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Independent Consultant at Self-employed / Freelance.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Software Engineer",
+        "company": "Startup (Confidential)",
+        "date": "Jun 2019 - Dec 2020",
+        "start_date": "Jun 2019",
+        "end_date": "Dec 2020",
+        "duration_years": 1.5,
+        "duration_months": 18,
+        "duration_display": "1.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Software Engineer at Startup (Confidential).",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Computer Applications",
+        "university": "Rajasthan University",
+        "year": "2019",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "WordPress",
+      "PHP",
+      "MySQL"
+    ]
+  },
+  {
+    "processId": "proc_synth_016",
+    "personalInfo": {
+      "name": "Sameer Khan",
+      "email": "proc_synth_016@example-test.invalid",
+      "phone": "",
+      "personal_location": "",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "3 years",
+    "experience": [
+      {
+        "position": "Backend Developer",
+        "company": "Paytm",
+        "date": "Jan 2022 - Present",
+        "start_date": "Jan 2022",
+        "end_date": "Present",
+        "duration_years": 3.0,
+        "duration_months": 36,
+        "duration_display": "3.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Backend Developer at Paytm.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "Aligarh Muslim University",
+        "year": "2021",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Node.js",
+      "Express",
+      "MongoDB"
+    ]
+  },
+  {
+    "processId": "proc_synth_017",
+    "personalInfo": {
+      "name": "Hana Tanaka",
+      "email": "proc_synth_017@example-test.invalid",
+      "phone": "",
+      "personal_location": "Tokyo, Japan",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "7 years",
+    "experience": [
+      {
+        "position": "Software Architect",
+        "company": "Rakuten",
+        "date": "Apr 2017 - Present",
+        "start_date": "Apr 2017",
+        "end_date": "Present",
+        "duration_years": 7.0,
+        "duration_months": 84,
+        "duration_display": "7.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Software Architect at Rakuten.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Master of Engineering (Computer Science)",
+        "university": "University of Tokyo",
+        "year": "2016",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Java",
+      "Kubernetes",
+      "Kafka",
+      "AWS"
+    ]
+  },
+  {
+    "processId": "proc_synth_018",
+    "personalInfo": {
+      "name": "Aditya Rao",
+      "email": "proc_synth_018@example-test.invalid",
+      "phone": "",
+      "personal_location": "Chennai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "8 years",
+    "experience": [
+      {
+        "position": "Embedded Systems Engineer",
+        "company": "Bosch",
+        "date": "Jun 2016 - Present",
+        "start_date": "Jun 2016",
+        "end_date": "Present",
+        "duration_years": 8.0,
+        "duration_months": 96,
+        "duration_display": "8.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Embedded Systems Engineer at Bosch.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Electronics and Communication)",
+        "university": "Anna University",
+        "year": "2015",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "C",
+      "Embedded C",
+      "RTOS",
+      "Microcontrollers"
+    ]
+  },
+  {
+    "processId": "proc_synth_019",
+    "personalInfo": {
+      "name": "Sneha Kapoor",
+      "email": "proc_synth_019@example-test.invalid",
+      "phone": "",
+      "personal_location": "Noida",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "4 years",
+    "experience": [
+      {
+        "position": "Product Manager",
+        "company": "Paytm",
+        "date": "Jan 2024 - Present",
+        "start_date": "Jan 2024",
+        "end_date": "Present",
+        "duration_years": 0.7,
+        "duration_months": 8,
+        "duration_display": "0.7 years",
+        "is_ongoing": true,
+        "description": "Worked as Product Manager at Paytm.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Associate PM",
+        "company": "Ola",
+        "date": "Jun 2023 - Dec 2023",
+        "start_date": "Jun 2023",
+        "end_date": "Dec 2023",
+        "duration_years": 0.5,
+        "duration_months": 6,
+        "duration_display": "0.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Associate PM at Ola.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Business Analyst",
+        "company": "Swiggy",
+        "date": "Jan 2022 - May 2023",
+        "start_date": "Jan 2022",
+        "end_date": "May 2023",
+        "duration_years": 1.4,
+        "duration_months": 17,
+        "duration_display": "1.4 years",
+        "is_ongoing": false,
+        "description": "Worked as Business Analyst at Swiggy.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Analyst",
+        "company": "Deloitte",
+        "date": "Jul 2020 - Dec 2021",
+        "start_date": "Jul 2020",
+        "end_date": "Dec 2021",
+        "duration_years": 1.4,
+        "duration_months": 17,
+        "duration_display": "1.4 years",
+        "is_ongoing": false,
+        "description": "Worked as Analyst at Deloitte.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Business Administration",
+        "university": "Delhi University",
+        "year": "2020",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Product Management",
+      "SQL",
+      "Analytics",
+      "JIRA"
+    ]
+  },
+  {
+    "processId": "proc_synth_020",
+    "personalInfo": {
+      "name": "Tara Singh",
+      "email": "proc_synth_020@example-test.invalid",
+      "phone": "",
+      "personal_location": "Kolkata",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "2 years",
+    "experience": [
+      {
+        "position": "Junior Developer",
+        "company": "Cognizant",
+        "date": "Jul 2022 - Present",
+        "start_date": "Jul 2022",
+        "end_date": "Present",
+        "duration_years": 2.0,
+        "duration_months": 24,
+        "duration_display": "2.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Junior Developer at Cognizant.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "Jadavpur University",
+        "year": "2022",
+        "gpa": "CGPA:8.9/10.0"
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Python",
+      "Django",
+      "PostgreSQL"
+    ]
+  },
+  {
+    "processId": "proc_synth_021",
+    "personalInfo": {
+      "name": "Ishaan Bhatt",
+      "email": "proc_synth_021@example-test.invalid",
+      "phone": "",
+      "personal_location": "Mumbai",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "0 years",
+    "experience": [],
+    "education": [
+      {
+        "degree": "Bachelor of Engineering (Information Technology)",
+        "university": "University of Mumbai",
+        "year": "2024",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "Python",
+      "Java",
+      "Data Structures"
+    ]
+  },
+  {
+    "processId": "proc_synth_022",
+    "personalInfo": {
+      "name": "Rajesh Iyer",
+      "email": "proc_synth_022@example-test.invalid",
+      "phone": "",
+      "personal_location": "Bengaluru",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "22 years",
+    "experience": [
+      {
+        "position": "VP of Engineering",
+        "company": "Microsoft",
+        "date": "Jan 2015 - Present",
+        "start_date": "Jan 2015",
+        "end_date": "Present",
+        "duration_years": 11.0,
+        "duration_months": 132,
+        "duration_display": "11.0 years",
+        "is_ongoing": true,
+        "description": "Worked as VP of Engineering at Microsoft.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Principal Engineer",
+        "company": "Amazon",
+        "date": "Jun 2005 - Dec 2014",
+        "start_date": "Jun 2005",
+        "end_date": "Dec 2014",
+        "duration_years": 9.5,
+        "duration_months": 114,
+        "duration_display": "9.5 years",
+        "is_ongoing": false,
+        "description": "Worked as Principal Engineer at Amazon.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "Indian Institute of Technology Bombay",
+        "year": "2003",
+        "gpa": ""
+      },
+      {
+        "degree": "Doctor of Philosophy (Computer Science)",
+        "university": "Stanford University",
+        "year": "2005",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [
+      {
+        "name": "AWS Certified Solutions Architect - Professional"
+      }
+    ],
+    "skillsNormalized": [
+      "Python",
+      "Distributed Systems",
+      "AWS",
+      "Kubernetes",
+      "Leadership",
+      "Machine Learning"
+    ]
+  },
+  {
+    "processId": "proc_synth_023",
+    "personalInfo": {
+      "name": "Priyanka Yadav",
+      "email": "proc_synth_023@example-test.invalid",
+      "phone": "",
+      "personal_location": "Lucknow",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "1 year",
+    "experience": [
+      {
+        "position": "Trainee Developer",
+        "company": "Local IT Solutions Pvt Ltd",
+        "date": "Jun 2024 - Present",
+        "start_date": "Jun 2024",
+        "end_date": "Present",
+        "duration_years": 1.0,
+        "duration_months": 12,
+        "duration_display": "1.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Trainee Developer at Local IT Solutions Pvt Ltd.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Computer Applications",
+        "university": "Lucknow University",
+        "year": "2024",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skillsNormalized": [
+      "HTML",
+      "CSS",
+      "Basic JavaScript"
+    ]
+  },
+  {
+    "processId": "proc_synth_024",
+    "personalInfo": {
+      "name": "Farhan Sheikh",
+      "email": "proc_synth_024@example-test.invalid",
+      "phone": "",
+      "personal_location": "Kochi",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "9 years",
+    "experience": [
+      {
+        "position": "Senior Backend Engineer",
+        "company": "Amazon",
+        "date": "Jan 2021 - Present",
+        "start_date": "Jan 2021",
+        "end_date": "Present",
+        "duration_years": 4.0,
+        "duration_months": 48,
+        "duration_display": "4.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Senior Backend Engineer at Amazon.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      },
+      {
+        "position": "Software Engineer",
+        "company": "Flipkart",
+        "date": "Jan 2016 - Jan 2020",
+        "start_date": "Jan 2016",
+        "end_date": "Jan 2020",
+        "duration_years": 4.0,
+        "duration_months": 48,
+        "duration_display": "4.0 years",
+        "is_ongoing": false,
+        "description": "Worked as Software Engineer at Flipkart.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "National Institute of Technology Calicut",
+        "year": "2015",
+        "gpa": ""
+      }
+    ],
+    "gaps": [
+      {
+        "gap_months": 12,
+        "gap_years": 1.0,
+        "gap_display": "12 months",
+        "from": "Jan 2020",
+        "to": "Jan 2021",
+        "after": {
+          "company": "Flipkart",
+          "position": "Software Engineer",
+          "end_date": "Jan 2020"
+        },
+        "before": {
+          "company": "Amazon",
+          "position": "Senior Backend Engineer",
+          "start_date": "Jan 2021"
+        }
+      }
+    ],
+    "certifications": [],
+    "skillsNormalized": [
+      "Java",
+      "AWS",
+      "DynamoDB",
+      "Microservices"
+    ]
+  },
+  {
+    "processId": "proc_synth_025",
+    "personalInfo": {
+      "name": "Divya Menon",
+      "email": "proc_synth_025@example-test.invalid",
+      "phone": "",
+      "personal_location": "Thiruvananthapuram",
+      "github": "",
+      "linkedin": ""
+    },
+    "totalExperience": "5 years",
+    "experience": [
+      {
+        "position": "Mobile App Developer",
+        "company": "PayPal",
+        "date": "Jun 2019 - Present",
+        "start_date": "Jun 2019",
+        "end_date": "Present",
+        "duration_years": 5.0,
+        "duration_months": 60,
+        "duration_display": "5.0 years",
+        "is_ongoing": true,
+        "description": "Worked as Mobile App Developer at PayPal.",
+        "location": "",
+        "current_location": null,
+        "contractor": null,
+        "engagements": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Technology (Computer Science)",
+        "university": "College of Engineering Trivandrum",
+        "year": "2019",
+        "gpa": ""
+      }
+    ],
+    "gaps": [],
+    "certifications": [],
+    "skills": [
+      "Swift",
+      "Kotlin",
+      "Flutter",
+      "Firebase"
+    ]
+  }
+]

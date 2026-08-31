@@ -75,7 +75,12 @@ OPERATORS_BY_TYPE: dict[str, set[str]] = {
 # failing to match on phrasing/pluralization. Word-boundary matching (not
 # plain substring) avoids false positives like "Systems" containing "ms".
 _DEGREE_KEYWORDS: list[tuple[int, tuple[str, ...]]] = [
-    (5, ("phd", "doctorate", "doctorates")),
+    # "doctor of philosophy" is the single most common full-length way a
+    # PhD is actually written on a resume/transcript -- confirmed missing
+    # here (returned no rank at all, not even ranked below a Bachelor's)
+    # until this was added, silently breaking a real "PhD + Bachelor's"
+    # candidate's degree-level down to just "Bachelor".
+    (5, ("phd", "doctorate", "doctorates", "doctor of philosophy", "dphil", "doctoral")),
     (4, ("master", "masters", "mba", "mtech", "msc", "ms")),
     (3, ("bachelor", "bachelors", "btech", "bsc", "bs")),
     (2, ("diploma", "diplomas", "associate", "associates")),

@@ -22,6 +22,7 @@ import os
 import re
 from functools import lru_cache
 
+from app.core.skill_taxonomy import canonicalize
 from app.core.vocabulary import EDUCATION_RANK_LABELS, education_rank
 
 _ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
@@ -261,6 +262,29 @@ def _normalize_company(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# When a resume's "company" field isn't a real, disclosed company at all
+# ("Self-employed", "Startup (Confidential)", "Freelance") it must not be
+# tier-matched -- confirmed a real false positive this way: company_ranks.json
+# (a ~7M-row scraped dataset) contains its OWN junk rows for these exact
+# placeholder phrases (someone else's messy "company" field became a row in
+# it too), so "Startup (Confidential)" matched a real but meaningless entry
+# literally named "startup" at Medium tier, and "Self-employed / Freelance"
+# matched one named "self employed" at Low tier -- both via a 2-WORD prefix,
+# not just the single-word case the length>=5 threshold already guards
+# against. Checked as a substring of the full normalized name, before any
+# prefix matching is attempted, so it can't be worked around by trailing
+# text either way.
+_COMPANY_PLACEHOLDER_MARKERS = (
+    "confidential", "undisclosed", "stealth", "self employed", "freelance",
+    "unemployed", "not applicable", "independent contractor",
+    "career break", "various clients", "multiple clients",
+)
+
+
+def _is_company_placeholder(norm: str) -> bool:
+    return any(marker in norm for marker in _COMPANY_PLACEHOLDER_MARKERS)
+
+
 # Real resume company fields are frequently the real company name PLUS
 # trailing junk a recruiter never typed -- a department, a city, a country
 # ("Syngene International Ltd. Discovery & Med.Chem Bangalore India" instead
@@ -290,7 +314,7 @@ def _needed_company_names(raw_records: list[dict]) -> set[str]:
             c = e.get("company")
             if isinstance(c, str) and c.strip():
                 norm = _normalize_company(c)
-                if norm:
+                if norm and not _is_company_placeholder(norm):
                     names.update(_company_prefixes(norm))
     return names
 
@@ -326,6 +350,8 @@ def _company_tier_for(company_names: list[str]) -> str | None:
     best_rank, best_tier = 0, None
     for raw in company_names:
         norm = _normalize_company(raw)
+        if _is_company_placeholder(norm):
+            continue
         tier = None
         for prefix in _company_prefixes(norm):
             tier = exact.get(prefix)
@@ -355,7 +381,16 @@ def _adapt_resume(raw: dict) -> dict:
     experience = raw.get("experience", []) or []
     education = raw.get("education", []) or []
 
-    skills = list(dict.fromkeys(raw.get("skillsNormalized") or raw.get("skills") or []))
+    # Canonicalize each stored skill through the taxonomy's aliases (safe,
+    # identity-preserving only -- see skill_taxonomy.canonicalize) so naming
+    # variants of the SAME tool ("react.js" / "ReactJS" / "React JS") all
+    # collapse to one consistent spelling. Confirmed a real gap otherwise: a
+    # candidate whose resume only used those variants was invisible to a
+    # plain "React" query, while an identical candidate who happened to have
+    # the exact string "React" matched fine -- same skill, same person in
+    # substance, different outcome purely from resume formatting.
+    raw_skills = raw.get("skillsNormalized") or raw.get("skills") or []
+    skills = list(dict.fromkeys(canonicalize(s) for s in raw_skills))
     universities = list(dict.fromkeys(
         (e.get("university") or "").strip() for e in education if e.get("university")
     ))

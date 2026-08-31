@@ -245,3 +245,25 @@ def test_compound_query_degrades_gracefully_instead_of_failing_whole_request():
     assert res.ok is True
     assert {f.field for f in res.filters} == {"experience", "skill"}
     assert any("relocate" in s.lower() for s in res.skipped)
+
+
+def test_in_operator_on_list_valued_field_checks_membership_not_stringified_list():
+    # Regression: "in" on a list-valued candidate field (skill) must check
+    # whether ANY of the candidate's items matches ANY of the filter's
+    # values -- not stringify the whole candidate list and compare it as one
+    # blob against each value (which would essentially never match).
+    cand = {"id": "x", "skills": ["python", "react"]}
+    f = Filter(field="skill", operator="in", value=["machine learning", "python", "aws"])
+    assert matches_filter(cand, f) is True
+
+    cand2 = {"id": "y", "skills": ["java", "go"]}
+    assert matches_filter(cand2, f) is False
+
+
+def test_not_in_operator_on_list_valued_field():
+    cand = {"id": "x", "skills": ["kubernetes"]}
+    f = Filter(field="skill", operator="not_in", value=["docker", "kubernetes"])
+    assert matches_filter(cand, f) is False
+
+    cand2 = {"id": "y", "skills": ["terraform"]}
+    assert matches_filter(cand2, f) is True

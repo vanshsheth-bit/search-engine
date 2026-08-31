@@ -77,6 +77,34 @@ FEW_SHOTS = [
                       "skill": "Python", "value": 3}]},
     ),
     (
+        # Umbrella CONCEPT ("machine learning" names no single specific
+        # product) -> expand to concrete tools via "in", per rule 3. Contrast
+        # with the AWS/Azure example right below: that query already names
+        # two specific products, so it's a plain OR of two "contains"
+        # filters, not an expansion.
+        "CURRENT FILTERS: []\nNEW QUERY: Someone with machine learning experience.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill", "operator": "in",
+                      "value": ["machine learning", "TensorFlow", "PyTorch",
+                                "scikit-learn", "Keras"]}]},
+    ),
+    (
+        # Confirmed live: without an explicit example for THIS concept word,
+        # the model fell back to a bare "contains" on the literal word
+        # "devops" and matched nobody, even a candidate with Kubernetes/
+        # Terraform/Ansible/Jenkins. Generalizing the umbrella-concept rule
+        # from ONE example (machine learning) to every other concept isn't
+        # reliable -- confirmed "frontend" generalizes fine on its own, but
+        # "devops" needed its own worked example, same lesson as every other
+        # routing rule in this prompt: reinforce a *reproduced* failure with
+        # a concrete example, don't assume principle-level text is enough.
+        "CURRENT FILTERS: []\nNEW QUERY: Someone with devops experience.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill", "operator": "in",
+                      "value": ["devops", "Kubernetes", "Docker", "Terraform",
+                                "Jenkins", "Ansible", "CI/CD"]}]},
+    ),
+    (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates who have either AWS or Azure.",
         {"intent": "FILTER_CANDIDATES", "logic": "OR",
          "filters": [{"field": "skill", "operator": "contains", "value": "AWS"},
@@ -341,7 +369,22 @@ RULES:
    ("specifically" / "must have" attached to "X years of <Skill>" does not
    change this -- it is still one skill_experience filter, not two.)
 3. "knows X" / "has X" / "exclude those without X" -> field "skill",
-   operator "contains", "value": "X".
+   operator "contains", "value": "X". EXCEPTION: if X is a broad UMBRELLA
+   CONCEPT that could be satisfied by several different specific
+   technologies rather than one exact named tool (e.g. "machine learning",
+   "cloud", "frontend", "devops", "database experience" -- concepts, not one
+   specific product) -- resumes usually list the specific tools, not the
+   umbrella phrase itself, so a bare "contains" on the umbrella phrase will
+   under-match. Instead use operator "in" with a "value" array of 4-6
+   CONCRETE, real, well-known technologies/tools you associate with that
+   concept (e.g. "machine learning" -> ["machine learning", "TensorFlow",
+   "PyTorch", "scikit-learn", "Keras"]; "cloud" -> ["AWS", "Azure", "GCP",
+   "Google Cloud"]). Put the original concept phrase FIRST in the array,
+   followed by the specific tools. Do NOT do this for a query that already
+   names one specific tool
+   ("knows Python", "has AWS") -- those stay a plain "contains" with that
+   one value; only expand a genuine umbrella concept, never a specific
+   product name.
 4. "either A or B" -> logic "OR" with one filter per option.
 5. "join immediately" -> notice_period lte 0 (unit days). "within N days/months"
    -> notice_period lte N with the matching unit.
