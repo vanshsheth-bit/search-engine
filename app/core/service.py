@@ -202,6 +202,15 @@ class FilterService:
         # against.
         self.store.set(session_id, job_id, SessionState(spec=spec, last_candidates=filtered))
 
+        # One or more filters in this request were dropped (unsupported field,
+        # bad value, etc.) but at least one other filter was still valid --
+        # apply what's real and say what got skipped, instead of failing the
+        # whole request over one bad clause (see validate_filters).
+        skip_note = (
+            "Couldn't apply: " + "; ".join(result.skipped) + "."
+            if result.skipped else None
+        )
+
         if not filtered:
             return FilterResponse(
                 status="no_match",
@@ -210,7 +219,7 @@ class FilterService:
                 logic=spec.logic,
                 filters=spec.filters,
                 chips=to_chips(spec.filters),
-                message="No candidates match these filters.",
+                message=skip_note or "No candidates match these filters.",
                 suggestions=_no_match_suggestions(spec.filters),
             )
 
@@ -222,6 +231,7 @@ class FilterService:
             filters=spec.filters,
             chips=to_chips(spec.filters),
             candidates=filtered,
+            message=skip_note,
         )
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from datetime import datetime
 
 import requests
 from fastapi import FastAPI
@@ -56,15 +58,26 @@ def health() -> dict:
     }
 
 
+logger = logging.getLogger(__name__)
+
+
 @app.post("/ai/candidates/filter", response_model=FilterResponse)
 def filter_candidates(req: FilterRequest) -> FilterResponse:
     """Natural-language filter. Returns ok / clarify / unsupported / no_match."""
-    return service.filter_by_query(
+    t0_wall = datetime.now().isoformat(timespec="milliseconds")
+    t0 = time.perf_counter()
+    resp = service.filter_by_query(
         query=req.query,
         job_id=req.job_id,
         session_id=req.session_id,
         reset=req.reset,
     )
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        "REQUEST /ai/candidates/filter query=%r start=%s end-to-end=%.2fs status=%s",
+        req.query, t0_wall, elapsed, resp.status,
+    )
+    return resp
 
 
 @app.patch("/ai/candidates/filter/state", response_model=FilterResponse)

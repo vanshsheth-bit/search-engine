@@ -43,8 +43,10 @@ _ORDINAL_RANK_FIELDS = {
 # tokens) -- "contains" must be a substring match here ("Somaiya" must match
 # "KJ Somaiya School of Engineering, Mumbai"), unlike `skill`, where each
 # list entry is already an atomic token and a substring match would wrongly
-# let "java" match "javascript".
-_FREE_TEXT_LIST_FIELDS = {"university", "company"}
+# let "java" match "javascript". job_title/certification are the same shape
+# as university/company: free-text strings, not atomic tokens (a certification
+# entry can be a whole sentence naming several certs at once).
+_FREE_TEXT_LIST_FIELDS = {"university", "company", "job_title", "certification"}
 
 
 # --------------------------------------------------------------------------- #

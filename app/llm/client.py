@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -61,22 +63,41 @@ class LLMClient:
 
         last_err: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
+            t0_wall = datetime.now().isoformat(timespec="milliseconds")
+            t0 = time.perf_counter()
             try:
                 resp = requests.post(
                     f"{self.base_url}/api/chat",
                     json=payload,
                     timeout=self.timeout,
                 )
+                elapsed = time.perf_counter() - t0
                 resp.raise_for_status()
-                content = resp.json()["message"]["content"]
+                body = resp.json()
+                content = body["message"]["content"]
                 data = json.loads(content)
+                # Ollama's own breakdown (ns -> ms) -- separates prompt
+                # prefill from actual token generation, so a slow request can
+                # be diagnosed instead of just seen as "one big number".
+                prompt_ms = body.get("prompt_eval_duration", 0) / 1e6
+                eval_ms = body.get("eval_duration", 0) / 1e6
+                load_ms = body.get("load_duration", 0) / 1e6
+                logger.info(
+                    "LLM query=%r start=%s attempt=%d/%d total=%.1fs "
+                    "(model_load=%.0fms prompt_eval=%.0fms(%d tok) "
+                    "generate=%.0fms(%d tok))",
+                    query, t0_wall, attempt, self.max_retries, elapsed,
+                    load_ms, prompt_ms, body.get("prompt_eval_count", 0),
+                    eval_ms, body.get("eval_count", 0),
+                )
                 return LLMOutput.model_validate(data)
             except (requests.RequestException, KeyError, json.JSONDecodeError,
                     ValueError) as exc:
+                elapsed = time.perf_counter() - t0
                 last_err = exc
                 logger.warning(
-                    "LLM translate attempt %d/%d failed: %s",
-                    attempt, self.max_retries, exc,
+                    "LLM query=%r start=%s attempt %d/%d FAILED after %.1fs: %s",
+                    query, t0_wall, attempt, self.max_retries, elapsed, exc,
                 )
 
         # Graceful degradation: never crash the request. Ask the user to

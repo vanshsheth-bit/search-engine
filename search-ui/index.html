@@ -361,8 +361,11 @@
     }
     if (resp.status === "no_match") {
       const sugg = (resp.suggestions || []).map(s => `<li>${escapeHtml(s)}</li>`).join("");
+      const skipNote = resp.message && resp.message.startsWith("Couldn't apply")
+        ? `<div class="card-line">${escapeHtml(resp.message)}</div>` : "";
       return {
         html: `I couldn't find anyone matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"}.` +
+          skipNote +
           (sugg ? `<ul class="suggestions">${sugg}</ul>` : ""),
       };
     }
@@ -370,8 +373,9 @@
       const intro = resp.showing === 1
         ? `Found 1 candidate matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"}.`
         : `Found ${resp.showing} candidates matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"} (of ${resp.total} total).`;
+      const note = resp.message ? `<div class="card-line">${escapeHtml(resp.message)}</div>` : "";
       const cards = (resp.candidates || []).map(candidateCardHtml).join("");
-      return { html: `${intro}<div class="cards">${cards}</div>` };
+      return { html: `${intro}${note}<div class="cards">${cards}</div>` };
     }
     return { html: "Something unexpected happened." , cls: "err" };
   }

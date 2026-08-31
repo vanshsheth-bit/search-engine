@@ -228,3 +228,20 @@ def test_real_university_name_still_passes():
         [Filter(field="university", operator="contains", value="Somaiya")]
     )
     assert res.ok is True
+
+
+def test_compound_query_degrades_gracefully_instead_of_failing_whole_request():
+    # "8+ years, knows Kubernetes, and open to relocating" -- relocation isn't
+    # available for this dataset, but experience/skill are real and valid.
+    # The bad clause must not sink the two good ones.
+    res = validate_filters(
+        [
+            Filter(field="experience", operator="gte", value=8),
+            Filter(field="skill", operator="contains", value="Kubernetes"),
+            Filter(field="relocation", operator="equals", value=True),
+        ],
+        available_fields={"location", "experience", "skill"},
+    )
+    assert res.ok is True
+    assert {f.field for f in res.filters} == {"experience", "skill"}
+    assert any("relocate" in s.lower() for s in res.skipped)

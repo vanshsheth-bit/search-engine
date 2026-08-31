@@ -29,6 +29,12 @@ class ValidationResult:
     filters: list[Filter] = dc_field(default_factory=list)
     error: str | None = None
     unsupported: bool = False  # True -> respond with UNSUPPORTED_FILTER
+    # Per-filter reasons for filters that were dropped but did NOT abort the
+    # whole request -- e.g. one unsupported clause in an otherwise-valid
+    # compound query. Surfaced to the recruiter alongside real results rather
+    # than silently swallowed, so "8+ years, Kubernetes, and relocating" still
+    # returns matches for the two real filters instead of nothing.
+    skipped: list[str] = dc_field(default_factory=list)
 
 
 def _coerce_value(f: Filter, expected_type: str) -> Filter:
@@ -64,43 +70,43 @@ def validate_filters(
 ) -> ValidationResult:
     """Validate a list of filters. `available_fields` is the set of fields the
     candidate dataset actually provides; if None, all vocabulary fields are
-    assumed available."""
+    assumed available.
+
+    Each filter is checked independently: a bad one is dropped and its reason
+    recorded in `skipped`, but does NOT abort the rest of the batch -- a
+    compound query like "8+ years, knows Kubernetes, and open to relocating"
+    should still return real matches for the two valid filters, with a note
+    that relocation couldn't be checked, rather than failing the whole
+    request over one unsupported clause. Only when NOTHING survives does the
+    overall result come back not-ok (unsupported takes priority in that case
+    if any drop reason was "not available" rather than "malformed")."""
     validated: list[Filter] = []
+    skipped: list[str] = []
+    any_unsupported = False
 
     for f in filters:
         label = FIELD_LABELS.get(f.field, f.field)
 
         if f.field not in FIELD_TYPES:
-            return ValidationResult(
-                ok=False, unsupported=True,
-                error=f"I can't filter on \"{f.field}\" -- that's not something "
-                      f"available for these candidates.",
-            )
+            skipped.append(f"\"{f.field}\" isn't something available for these candidates")
+            any_unsupported = True
+            continue
 
         expected_type = FIELD_TYPES[f.field]
 
         if f.operator not in ALLOWED_OPERATORS:
-            return ValidationResult(
-                ok=False,
-                error="Sorry, I didn't understand that comparison -- could you "
-                      "rephrase it?",
-            )
+            skipped.append(f"I didn't understand the comparison for {label}")
+            continue
 
         if f.operator not in OPERATORS_BY_TYPE.get(expected_type, set()):
-            return ValidationResult(
-                ok=False,
-                error=f"That comparison doesn't make sense for {label} -- "
-                      f"could you rephrase?",
-            )
+            skipped.append(f"that comparison doesn't make sense for {label}")
+            continue
 
         if f.field in SKILL_SCOPED_FIELDS and not f.skill:
-            return ValidationResult(
-                ok=False,
-                error="I need to know which skill that years-of-experience "
-                      "applies to -- try phrasing it like \"5+ years of "
-                      "Python\", or if you meant overall experience, \"5+ "
-                      "years of experience\".",
+            skipped.append(
+                "I need to know which skill a years-of-experience filter applies to"
             )
+            continue
 
         if (
             f.field in NAME_FIELDS
@@ -108,31 +114,32 @@ def validate_filters(
             and f.value.strip().lower() in GENERIC_FILLER_WORDS
         ):
             tier_field = "college_tier" if f.field == "university" else "company_tier"
-            return ValidationResult(
-                ok=False,
-                error=f"\"{f.value}\" doesn't look like a specific {label} name -- "
-                      f"could you name the actual one, or did you mean a ranking "
-                      f"(e.g. \"top tier\")? That's a different field ({FIELD_LABELS[tier_field]}).",
+            skipped.append(
+                f"\"{f.value}\" doesn't look like a specific {label} name -- "
+                f"did you mean a ranking ({FIELD_LABELS[tier_field]}) instead?"
             )
+            continue
 
         f = _coerce_value(f, expected_type)
 
         if not _type_ok(f.value, expected_type):
-            return ValidationResult(
-                ok=False,
-                error=f"That doesn't look like a valid value for {label} -- "
-                      f"could you rephrase?",
-            )
+            skipped.append(f"that doesn't look like a valid value for {label}")
+            continue
 
         if available_fields is not None:
             probe = "skill" if f.field in {"skill", "skill_experience"} else f.field
             if probe not in available_fields:
-                return ValidationResult(
-                    ok=False, unsupported=True,
-                    error=f"I don't have {label} data for these candidates, "
-                          f"so I can't filter on that.",
-                )
+                skipped.append(f"I don't have {label} data for these candidates")
+                any_unsupported = True
+                continue
 
         validated.append(f)
 
-    return ValidationResult(ok=True, filters=validated)
+    if not validated and skipped:
+        msg = "; ".join(skipped)
+        msg = msg[0].upper() + msg[1:]
+        if not msg.endswith((".", "?", "!")):
+            msg += "."
+        return ValidationResult(ok=False, unsupported=any_unsupported, error=msg)
+
+    return ValidationResult(ok=True, filters=validated, skipped=skipped)

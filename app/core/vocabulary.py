@@ -21,6 +21,9 @@ FIELD_TYPES: dict[str, str] = {
     "company_tier": "ordinal",       # Low / Medium / High, from a ranking dataset
     "notice_period": "number",       # numeric, paired with a unit
     "relocation": "boolean",         # willing to relocate
+    "job_title": "string",           # position/role title(s) held
+    "certification": "string",       # certification name(s), free-text (contains check)
+    "employment_gap_months": "number",  # longest single employment gap, in months
 }
 
 ALLOWED_FIELDS: list[str] = list(FIELD_TYPES.keys())
@@ -39,6 +42,9 @@ FIELD_LABELS: dict[str, str] = {
     "company_tier": "company ranking/tier",
     "notice_period": "notice period",
     "relocation": "willingness to relocate",
+    "job_title": "job title/role held",
+    "certification": "certification",
+    "employment_gap_months": "longest employment gap (months)",
 }
 
 # Fields that MUST carry a `skill` key (which skill the number refers to).

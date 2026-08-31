@@ -38,7 +38,12 @@ from __future__ import annotations
 
 import json
 
-from app.core.vocabulary import ALLOWED_FIELDS, ALLOWED_OPERATORS
+from app.core.vocabulary import (
+    ALLOWED_FIELDS,
+    ALLOWED_OPERATORS,
+    FIELD_TYPES,
+    OPERATORS_BY_TYPE,
+)
 
 FEW_SHOTS = [
     (
@@ -57,6 +62,19 @@ FEW_SHOTS = [
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "location", "operator": "equals", "value": "Mumbai"},
                      {"field": "experience", "operator": "gte", "value": 5}]},
+    ),
+    (
+        # Contrast with the example directly above: swapping "experience" for
+        # a NAMED skill ("Python") changes the second filter's field from
+        # "experience" to "skill_experience" -- the location filter is
+        # unaffected either way. Do not pattern-match this to the
+        # location+experience template above just because the sentence shape
+        # is the same; check whether a specific skill/technology was named.
+        "CURRENT FILTERS: []\nNEW QUERY: Mumbai candidates with 3+ years of Python.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "location", "operator": "equals", "value": "Mumbai"},
+                     {"field": "skill_experience", "operator": "gte",
+                      "skill": "Python", "value": 3}]},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates who have either AWS or Azure.",
@@ -212,7 +230,57 @@ FEW_SHOTS = [
                      "-- results are already ranked best-first, so the top of the "
                      "list is your top candidates."},
     ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Candidates who have worked as a Senior Software Engineer.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "Senior Software Engineer"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Anyone who has held a Manager role, not just individual contributors.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "Manager"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Candidates with an AWS certification.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "certification", "operator": "contains", "value": "AWS"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Someone who is a certified Scrum Master.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "certification", "operator": "contains", "value": "Scrum"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: No candidates with a career gap longer than 6 months.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "employment_gap_months", "operator": "lte", "value": 6}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Exclude anyone with a big employment gap.",
+        {"intent": "CLARIFY",
+         "question": "What's the maximum gap length I should allow?",
+         "options": ["3 months", "6 months", "12 months"]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Candidates with a GPA above 3.5.",
+        {"intent": "UNSUPPORTED_FILTER",
+         "message": "GPA is not tracked reliably enough to filter on -- the source "
+                     "data mixes incompatible grading scales."},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Only candidates who graduated after 2020.",
+        {"intent": "UNSUPPORTED_FILTER",
+         "message": "Graduation year is not available as a filter."},
+    ),
 ]
+
+
+def _field_operator_table() -> str:
+    lines = []
+    for field, ftype in FIELD_TYPES.items():
+        ops = sorted(OPERATORS_BY_TYPE[ftype])
+        lines.append(f"  {field} ({ftype}): {', '.join(ops)}")
+    return "\n".join(lines)
 
 
 def build_system_prompt() -> str:
@@ -227,6 +295,32 @@ ALLOWED FIELDS: {", ".join(ALLOWED_FIELDS)}
 ALLOWED OPERATORS: {", ".join(ALLOWED_OPERATORS)}
 ALLOWED LOGIC: AND, OR, NOT
 
+EACH FIELD ONLY ACCEPTS CERTAIN OPERATORS -- USING THE WRONG ONE IS A HARD
+ERROR THAT REJECTS THE WHOLE FILTER. Consult this table for every filter you
+emit, no exceptions:
+{_field_operator_table()}
+
+The type in parentheses tells you the family:
+- "string" fields (location, skill, university, company, job_title,
+  certification) -- name/keyword matching. Use "contains" (most common),
+  "equals" (exact), or "in"/"not_in" for a list of options. NEVER use
+  "gte"/"lte"/"gt"/"lt" on a string field -- there is no ordering to compare.
+- "number" fields (experience, skill_experience, notice_period,
+  employment_gap_months) -- pure numeric comparison. Use "gte"/"lte"/"gt"/"lt"
+  for thresholds, "equals" for an exact count. NEVER use "contains" on a
+  number field -- a number cannot contain text (e.g. education/experience
+  fields do NOT take a skill or keyword as their value; if a skill/keyword is
+  what's actually being filtered, that belongs in a DIFFERENT field --
+  "skill", "university", "company", "job_title", or "certification" -- not
+  jammed into a numeric field as a "contains").
+- "ordinal" fields (education, college_tier, company_tier) -- a ranked scale
+  (e.g. Bachelor < Master < PhD), compared by rank, not by substring. Use
+  "gte"/"lte"/"gt"/"lt" for "at least"/"at most" a level, "equals" for exactly
+  that level, "not_equals" for negation. NEVER use "contains" on an ordinal
+  field -- "has a doctorate" is "education" "gte" "Doctorate", NOT "education"
+  "contains" "doctorate".
+- "boolean" fields (relocation) -- "equals" true/false only.
+
 RULES:
 1. If the query updates a field already present in CURRENT FILTERS (e.g. a new
    location or a changed experience threshold), REPLACE that filter. Do not
@@ -238,6 +332,14 @@ RULES:
    ("X+ years of <Skill>" -> field "skill_experience", operator "gte",
    "skill": "<Skill>", numeric "value"). When in doubt with no skill named,
    use "experience", never "skill_experience" with an empty skill.
+   IMPORTANT: "X years of <Skill>" is exactly ONE filter (skill_experience),
+   never TWO filters. Do NOT emit a separate "experience" filter for the
+   years AND a second filter for the skill name -- that double-counts the
+   same requirement and drops the skill/years pairing entirely. Wrong:
+   [{{"field":"experience","operator":"gte","value":4}}, {{"field":"experience","operator":"contains","value":"Java"}}]
+   Right: [{{"field":"skill_experience","operator":"gte","skill":"Java","value":4}}]
+   ("specifically" / "must have" attached to "X years of <Skill>" does not
+   change this -- it is still one skill_experience filter, not two.)
 3. "knows X" / "has X" / "exclude those without X" -> field "skill",
    operator "contains", "value": "X".
 4. "either A or B" -> logic "OR" with one filter per option.
@@ -251,7 +353,12 @@ RULES:
    canonicalized automatically, so do not worry about exact spelling.
 6. If the query is vague and could map to multiple thresholds/values
    ("experienced", "near", "recent", "senior" without a number), return intent
-   "CLARIFY" with a concise question and 2-4 concrete options. Do NOT guess.
+   "CLARIFY" with a concise question and 2-4 concrete options. Do NOT guess --
+   this applies even when a number seems like a "reasonable default"
+   (e.g. "experienced" could plausibly mean 3, 5, or 10+ years to different
+   recruiters) -- silently picking one is exactly the guessing this rule
+   forbids. If NEW QUERY has no explicit number for a numeric field, you may
+   NOT invent one; only CLARIFY.
 6a-i. NEVER add a filter for a concept the query didn't mention. Every filter
    you output must trace to a specific word/phrase actually in NEW QUERY.
    Two filters is not inherently more correct than one -- a query naming
@@ -307,12 +414,46 @@ RULES:
    "not_equals" that value, NOT "lte"/"gte" the SAME value (operator "lte"
    with value "Low" means ONLY Low, the opposite of "not low"). If unsure,
    "not_equals" is always the safe choice for a negated rank.
+6d-i. Negation on a NUMERIC THRESHOLD (experience, notice_period,
+   employment_gap_months) -- "no one with more than N", "nobody with over N",
+   "exclude anyone with more than N" -- describes who to KEEP (the
+   complement), so it means "lte" N, NOT "gt" N. Read it as: the excluded
+   group is "> N", so the filter (which selects who STAYS) is the opposite
+   comparison, "<= N". Example: "no one with more than a year-long career
+   break" -> {{"field":"employment_gap_months","operator":"lte","value":12}}
+   -- NEVER "gt" here, that would keep only the people being excluded, the
+   exact opposite of the request. Same logic in reverse for "no one with
+   less than N" / "nobody under N" -> "gte" N.
 6e. "willing to relocate" / "open to relocation" -> field "relocation",
    operator "equals", value true. "not willing to relocate" / "no
    relocation" -> value false. Never route relocation phrasing through the
    "location" field -- they are unrelated (location = which city; relocation
    = willingness to move).
-6f. A general years-of-experience number and a separately-named skill in the
+6f-i. "job_title" = the ROLE/POSITION held ("Senior Engineer", "Manager",
+   "Product Owner") -> field "job_title", operator "contains". This is
+   different from "skill" (a technology/tool, e.g. "Python") and from
+   "company" (WHERE they worked) -- a title is WHAT they were called there.
+   "worked as X" / "held the role of X" / "an X by title" -> job_title.
+6f-ii. "certification" = a formal certificate/credential someone HOLDS
+   ("AWS Certified", "PMP", "certified Scrum Master") -> field
+   "certification", operator "contains", value = the certification/technology
+   name mentioned. Distinguish from "skill": a bare technology name with no
+   certification language ("knows AWS", "has Python") is "skill"; the word
+   "certified"/"certification"/"certificate" attached to it makes it
+   "certification" instead ("AWS certified", "Python certification").
+6f-iii. "employment_gap_months" = the LONGEST single continuous period NOT
+   employed, in months -> numeric. "no gap over N months" / "no big career
+   gaps" (with a number given) -> operator "lte", value N. A vague gap
+   request with NO number ("no big gaps", "avoid job hoppers with long
+   gaps") -> "CLARIFY" asking for a maximum, same as any other vague
+   threshold (see rule 6). Do NOT confuse this with "notice_period" (time
+   before a candidate can START a new job) -- a gap is about PAST
+   unemployment between previous jobs.
+6f-iv. GPA/CGPA and graduation year are NOT tracked -- any query naming
+   either ("GPA above X", "graduated in/after/before <year>") must return
+   "UNSUPPORTED_FILTER", never approximated via "education" (which is
+   degree LEVEL only, e.g. Bachelor/Master, not a grade or a year).
+6g. A general years-of-experience number and a separately-named skill in the
    SAME query ("10+ years who know AWS", "senior, knows Python") are TWO
    independent filters -- "experience" (gte N) AND "skill" (contains) --
    never ALSO emit a "skill_experience" filter unless the years are
@@ -322,7 +463,13 @@ RULES:
    return intent "UNSUPPORTED_FILTER" with a short message naming the missing
    data. Never guess a plausible-sounding filter for a concept ALLOWED FIELDS
    doesn't actually cover -- an honest "I don't have that" is always better
-   than a filter that quietly answers something else.
+   than a filter that quietly answers something else. In particular, "salary"/
+   "compensation"/"CTC", work authorization/visa/citizenship, gender/age/other
+   demographic traits, and shift/work-hours preference are NEVER in ALLOWED
+   FIELDS -- do not force them into "experience" (they are not a count of
+   years) or any other field just because a filter of some kind was
+   requested. If nothing in ALLOWED FIELDS is a genuine match, the answer is
+   "UNSUPPORTED_FILTER", never the closest-sounding numeric field.
 8. Otherwise return intent "FILTER_CANDIDATES".
 9. Output ONLY a single JSON object. No markdown, no commentary.
 

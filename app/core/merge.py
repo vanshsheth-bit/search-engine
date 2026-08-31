@@ -16,6 +16,9 @@ _FIELD_ICON = {
     "company_tier": "🏆",
     "notice_period": "⏱️",
     "relocation": "✈️",
+    "job_title": "💼",
+    "certification": "📜",
+    "employment_gap_months": "🕳️",
 }
 
 
@@ -58,6 +61,15 @@ def chip_label(f: Filter) -> str:
     if f.field == "company":
         prefix = "Not at " if f.operator in {"not_contains", "not_equals"} else ""
         return f"{icon} {prefix}{f.value}".strip()
+    if f.field == "job_title":
+        prefix = "Not " if f.operator in {"not_contains", "not_equals"} else ""
+        return f"{icon} {prefix}{f.value}".strip()
+    if f.field == "certification":
+        prefix = "No " if f.operator in {"not_contains", "not_equals"} else ""
+        return f"{icon} {prefix}{f.value}".strip()
+    if f.field == "employment_gap_months":
+        sym = _OP_SYMBOL.get(f.operator, "")
+        return f"{icon} Gap {sym} {f.value} mo".strip()
     prefix = "Not " if f.operator in {"not_equals", "not_contains", "not_in"} else ""
     return f"{icon} {prefix}{f.value}".strip()
 

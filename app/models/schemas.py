@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 # Python" needs BOTH kept, not whichever the LLM listed last. Fields not
 # listed here (location, education, experience, ...) keep single-value
 # "replace" semantics -- "actually, Bangalore instead" should replace, not
-# stack, a location.
-_MULTI_VALUE_FIELDS = {"skill", "university", "company"}
+# stack, a location. job_title/certification are multi-value for the same
+# reason as university/company -- a candidate can hold several of each, and
+# "worked as Manager and Team Lead" / "has AWS and Scrum certs" need both.
+_MULTI_VALUE_FIELDS = {"skill", "university", "company", "job_title", "certification"}
 
 
 class Filter(BaseModel):

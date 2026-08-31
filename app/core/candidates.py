@@ -66,6 +66,31 @@ _TRAILING_REGIONS = {
     "united arab emirates",
 }
 
+# Location.json (the city gazetteer) lists historical/colonial-era Indian
+# city names (Bombay, Calcutta, Madras, ...) as their OWN separate entries
+# with their OWN canonical spelling -- it has no idea they're the same city
+# as their modern renamed counterpart. Confirmed against this dataset:
+# without this map, a resume saying "Bombay" and one saying "Mumbai" resolve
+# to two different canonical strings and silently never match each other in
+# an "equals" filter, even though a recruiter means the same city either
+# way. "Bangalore" is worse -- it isn't in the gazetteer as any entry at all
+# (only "Bengaluru" is), so it fell all the way through to the raw-string
+# fallback, unnormalized. Applied as a final step regardless of whether the
+# match came from the gazetteer or the crude fallback, so either path lands
+# on the one modern canonical name.
+_HISTORICAL_CITY_ALIASES = {
+    "bombay": "Mumbai",
+    "calcutta": "Kolkata",
+    "madras": "Chennai",
+    "bangalore": "Bengaluru",
+    "poona": "Pune",
+    "gurgaon": "Gurugram",
+    "trivandrum": "Thiruvananthapuram",
+    "mysore": "Mysuru",
+    "baroda": "Vadodara",
+    "cochin": "Kochi",
+}
+
 
 @lru_cache(maxsize=1)
 def _load_city_gazetteer() -> dict[str, str]:
@@ -88,6 +113,12 @@ def _load_city_gazetteer() -> dict[str, str]:
     return lookup
 
 
+def _canonicalize_city(name: str | None) -> str | None:
+    if not name:
+        return name
+    return _HISTORICAL_CITY_ALIASES.get(name.strip().lower(), name)
+
+
 def _normalize_location(raw: str | None) -> str | None:
     if not raw or not raw.strip():
         return None
@@ -96,8 +127,11 @@ def _normalize_location(raw: str | None) -> str | None:
     # Try the longest real-city match first, so multi-word cities ("Navi
     # Mumbai") resolve whole rather than truncated. Require >=3 chars so a
     # garbage fragment ("NO, 39") can't coincidentally hit some obscure
-    # 2-letter place name in a 151k-row gazetteer.
-    words = [w for w in re.split(r"[,\s]+", s) if w]
+    # 2-letter place name in a 151k-row gazetteer. Split on hyphens too, not
+    # just commas/whitespace -- resumes write compound city names both ways
+    # ("Navi-Mumbai" as well as "Navi Mumbai"), and the gazetteer only has
+    # the space-separated form.
+    words = [w for w in re.split(r"[,\s\-]+", s) if w]
     gazetteer = _load_city_gazetteer()
     for end in range(len(words), 0, -1):
         candidate = " ".join(words[:end])
@@ -105,20 +139,20 @@ def _normalize_location(raw: str | None) -> str | None:
             continue
         canon = gazetteer.get(candidate.lower())
         if canon:
-            return canon
+            return _canonicalize_city(canon)
 
     # Fall back to the old heuristic for anything the gazetteer doesn't
     # recognise verbatim.
     if "," in s:
         city = s.split(",")[0].strip()
-        return city or None
+        return _canonicalize_city(city) if city else None
     parts = s.split()
     if len(parts) >= 2:
         last = parts[-1]
         if last.upper() in _US_STATE_ABBR or last.lower() in _TRAILING_REGIONS:
             city = " ".join(parts[:-1]).strip()
-            return city or None
-    return s
+            return _canonicalize_city(city) if city else None
+    return _canonicalize_city(s)
 
 
 _DURATION_RE = re.compile(
@@ -227,6 +261,28 @@ def _normalize_company(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Real resume company fields are frequently the real company name PLUS
+# trailing junk a recruiter never typed -- a department, a city, a country
+# ("Syngene International Ltd. Discovery & Med.Chem Bangalore India" instead
+# of just "Syngene International"). An exact-only match against that misses
+# ~59% of real companies in practice (confirmed against this dataset), even
+# extremely well-known ones like Amazon or HSBC, purely because of trailing
+# noise. Falling back to progressively shorter PREFIXES (not a keyword-bag
+# like universities) recovers most of these while staying safe: a prefix
+# match preserves word order and requires the match to start at the
+# beginning of the name, so "Godrej Industries Ltd Thane" can only ever match
+# "godrej industries" or "godrej", never coincidentally match an unrelated
+# company that merely shares a later word. Still requires >=2 words, or a
+# single word of >=5 chars, to avoid matching on a lone generic/short token.
+def _company_prefixes(norm: str) -> list[str]:
+    words = norm.split()
+    return [
+        " ".join(words[:end])
+        for end in range(len(words), 0, -1)
+        if end >= 2 or len(words[0]) >= 5
+    ]
+
+
 def _needed_company_names(raw_records: list[dict]) -> set[str]:
     names = set()
     for r in raw_records:
@@ -235,7 +291,7 @@ def _needed_company_names(raw_records: list[dict]) -> set[str]:
             if isinstance(c, str) and c.strip():
                 norm = _normalize_company(c)
                 if norm:
-                    names.add(norm)
+                    names.update(_company_prefixes(norm))
     return names
 
 
@@ -269,7 +325,12 @@ def _company_tier_for(company_names: list[str]) -> str | None:
     exact = _load_company_tiers()
     best_rank, best_tier = 0, None
     for raw in company_names:
-        tier = exact.get(_normalize_company(raw))
+        norm = _normalize_company(raw)
+        tier = None
+        for prefix in _company_prefixes(norm):
+            tier = exact.get(prefix)
+            if tier:
+                break
         if tier and _TIER_RANK[tier] > best_rank:
             best_rank, best_tier = _TIER_RANK[tier], tier
     return best_tier
@@ -301,6 +362,19 @@ def _adapt_resume(raw: dict) -> dict:
     companies = list(dict.fromkeys(
         (e.get("company") or "").strip() for e in experience if e.get("company")
     ))
+    job_titles = list(dict.fromkeys(
+        (e.get("position") or "").strip() for e in experience if e.get("position")
+    ))
+    certifications = list(dict.fromkeys(
+        (c.get("name") or "").strip() for c in (raw.get("certifications") or []) if c.get("name")
+    ))
+    # Longest single gap, not cumulative -- "no gap over 6 months" is about
+    # one continuous absence, not total time away across a career. Defaults
+    # to 0 (not omitted) for candidates with no recorded gap, so a "gap <= N"
+    # query correctly keeps them instead of failing them via missing-data
+    # semantics (see matches_filter's handling of value is None).
+    gaps = raw.get("gaps") or []
+    longest_gap_months = max((g.get("gap_months") or 0) for g in gaps) if gaps else 0
 
     candidate = {
         "id": raw.get("processId"),
@@ -313,6 +387,9 @@ def _adapt_resume(raw: dict) -> dict:
         "company": companies,
         "company_tier": _company_tier_for(companies),
         "skills": skills,
+        "job_title": job_titles,
+        "certification": certifications,
+        "employment_gap_months": longest_gap_months,
     }
     # Drop keys with no data rather than asserting a false "field is present".
     return {k: v for k, v in candidate.items() if v not in (None, [], "")}
@@ -395,4 +472,10 @@ def get_available_fields(job_id: str) -> set[str]:
             available.add("notice_period")
         if "skills" in c:
             available.add("skill")
+        if "job_title" in c:
+            available.add("job_title")
+        if "certification" in c:
+            available.add("certification")
+        if "employment_gap_months" in c:
+            available.add("employment_gap_months")
     return available
