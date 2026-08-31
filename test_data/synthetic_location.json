@@ -1,0 +1,19 @@
+{"_id": {"$oid": "synth000000000000000000"}, "name": "Mumbai", "state_name": "Maharashtra", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000001"}, "name": "Navi Mumbai", "state_name": "Maharashtra", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000002"}, "name": "Bombay", "state_name": "Maharashtra", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000003"}, "name": "Bengaluru", "state_name": "Karnataka", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000004"}, "name": "Bangalore", "state_name": "Karnataka", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000005"}, "name": "Delhi", "state_name": "Delhi", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000006"}, "name": "Pune", "state_name": "Maharashtra", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000007"}, "name": "Chennai", "state_name": "Tamil Nadu", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000008"}, "name": "Hyderabad", "state_name": "Telangana", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000009"}, "name": "Ahmedabad", "state_name": "Gujarat", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000a"}, "name": "Gurugram", "state_name": "Haryana", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000b"}, "name": "Gurgaon", "state_name": "Haryana", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000c"}, "name": "Jaipur", "state_name": "Rajasthan", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000d"}, "name": "Kolkata", "state_name": "West Bengal", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000e"}, "name": "Noida", "state_name": "Uttar Pradesh", "country_name": "India"}
+{"_id": {"$oid": "synth00000000000000000f"}, "name": "Kochi", "state_name": "Kerala", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000010"}, "name": "Thiruvananthapuram", "state_name": "Kerala", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000011"}, "name": "Lucknow", "state_name": "Uttar Pradesh", "country_name": "India"}
+{"_id": {"$oid": "synth000000000000000012"}, "name": "Tokyo", "state_name": "Tokyo", "country_name": "Japan"}

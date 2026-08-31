@@ -9,8 +9,16 @@ exists to probe a specific real failure mode already found or suspected in
 this session: city-name aliasing, concept-vs-literal skill matching, messy
 company/certification text, name collisions for LOOKUP, boundary values,
 missing data, multi-degree ranking, and so on. Company and university names
-are real (so tier-matching against the real reference datasets is
-meaningfully testable) -- only the candidate identities are invented.
+are real -- only the candidate identities are invented.
+
+Also writes minimal synthetic Location.json / master_universities.csv /
+company_ranks.json equivalents (scoped to exactly the places/schools/
+companies referenced above), so the whole test suite is genuinely
+self-contained and doesn't silently depend on the real, gitignored
+reference datasets being present. That WAS a real bug here: the test
+fixture patched resume/match-result paths but not these three, so on a
+clean checkout with no real data, city normalization fell back to an empty
+gazetteer and the hyphenated-city test failed.
 
 Run: .venv/Scripts/python.exe test_data/generate_synthetic_data.py
 """
@@ -361,12 +369,123 @@ for i, r in enumerate(CANDIDATES):
         })
 
 
+# --------------------------------------------------------------------------- #
+# Reference datasets (Location.json / master_universities.csv /
+# company_ranks.json equivalents), scoped to exactly the real-world places,
+# universities, and companies the 25 candidates above reference. Without
+# these, the test suite silently depended on the real, gitignored versions
+# being present on whoever's machine ran it -- confirmed as a real bug: on a
+# clean checkout with no real data, city normalization falls back to an
+# empty gazetteer and the hyphenated-city test fails ("Navi-Mumbai" never
+# resolves to "Navi Mumbai"). "Engineering College" (candidate #10, Ananya
+# Desai) is DELIBERATELY left out of the university tiers below -- that
+# candidate exists specifically to test the college_tier=None path for an
+# unresolvably generic university name.
+# --------------------------------------------------------------------------- #
+_LOCATIONS = [
+    ("Mumbai", "Maharashtra", "India"), ("Navi Mumbai", "Maharashtra", "India"),
+    ("Bombay", "Maharashtra", "India"),  # historical name, own gazetteer row -- mirrors the real quirk that motivated the alias map
+    ("Bengaluru", "Karnataka", "India"), ("Bangalore", "Karnataka", "India"),
+    ("Delhi", "Delhi", "India"), ("Pune", "Maharashtra", "India"),
+    ("Chennai", "Tamil Nadu", "India"), ("Hyderabad", "Telangana", "India"),
+    ("Ahmedabad", "Gujarat", "India"), ("Gurugram", "Haryana", "India"),
+    ("Gurgaon", "Haryana", "India"), ("Jaipur", "Rajasthan", "India"),
+    ("Kolkata", "West Bengal", "India"), ("Noida", "Uttar Pradesh", "India"),
+    ("Kochi", "Kerala", "India"), ("Thiruvananthapuram", "Kerala", "India"),
+    ("Lucknow", "Uttar Pradesh", "India"), ("Tokyo", "Tokyo", "Japan"),
+]
+
+_UNIVERSITY_TIERS = {
+    "Indian Institute of Technology Bombay": "High",
+    "Indian Institute of Science": "High",
+    "Indian Institute of Management Ahmedabad": "High",
+    "Stanford University": "High",
+    "Delhi Technological University": "Medium",
+    "Anna University": "Medium",
+    "Osmania University": "Medium",
+    "PES University": "Medium",
+    "JNTU Hyderabad": "Medium",
+    "National Institute of Technology Calicut": "Medium",
+    "University of Madras": "Medium",
+    "R.V. College of Engineering": "Medium",
+    "Mumbai University": "Low",
+    "University of Mumbai": "Low",
+    "Pune University": "Low",
+    "Rajasthan University": "Low",
+    "Aligarh Muslim University": "Low",
+    "Delhi University": "Low",
+    "Jadavpur University": "Low",
+    "Lucknow University": "Low",
+    "College of Engineering Trivandrum": "Low",
+    "University of Tokyo": "Low",
+    # "Engineering College" deliberately absent
+}
+
+_COMPANY_TIERS = {
+    "Google": "HIGH", "Microsoft": "HIGH", "Amazon": "HIGH", "Oracle": "HIGH",
+    "PayPal": "HIGH", "Infosys": "HIGH", "Tata Consultancy Services": "HIGH",
+    "Wipro": "MEDIUM", "Cognizant Technology Solutions India": "MEDIUM",
+    "Cognizant": "MEDIUM", "Capgemini": "MEDIUM", "Mindtree": "MEDIUM",
+    "Mphasis": "MEDIUM", "Persistent Systems": "MEDIUM", "Zoho": "MEDIUM",
+    "Deloitte": "MEDIUM", "Rakuten": "MEDIUM", "Bosch": "MEDIUM",
+    "Myntra": "MEDIUM", "Flipkart": "MEDIUM", "Swiggy": "MEDIUM",
+    "Zomato": "MEDIUM", "Paytm": "MEDIUM", "Ola": "MEDIUM",
+    "Ernst Young": "MEDIUM", "L T Infotech": "MEDIUM",
+    "Local IT Solutions": "LOW",
+    # Deliberate junk rows -- a real, confirmed false positive: a scraped
+    # company database contains its OWN placeholder rows for these exact
+    # non-company phrases. Included here so the placeholder guard
+    # (candidates.py's _is_company_placeholder) is PROVEN to matter -- without
+    # it, "Self-employed / Freelance" and "Startup (Confidential)" would
+    # match these junk rows and get a fake tier, exactly as happened for
+    # real before the fix.
+    "self employed": "LOW", "startup": "MEDIUM",
+}
+
+
+def _write_location_json(path: Path) -> None:
+    lines = [
+        json.dumps({"_id": {"$oid": f"synth{i:018x}"}, "name": name,
+                    "state_name": state, "country_name": country})
+        for i, (name, state, country) in enumerate(_LOCATIONS)
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_university_csv(path: Path) -> None:
+    import csv
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["institution_name", "location", "Tier"])
+        for name, tier in _UNIVERSITY_TIERS.items():
+            writer.writerow([name, "India", tier])
+
+
+def _write_company_ranks_json(path: Path) -> None:
+    lines = [
+        json.dumps({"_id": {"$oid": f"synth{i:018x}"}, "name": name,
+                    "industry": "various", "company_tier": tier})
+        for i, (name, tier) in enumerate(_COMPANY_TIERS.items())
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     resumes_path = OUT_DIR / "synthetic_parsedresumes.json"
     matches_path = OUT_DIR / "synthetic_jdmatchresults.json"
     resumes_path.write_text(json.dumps(CANDIDATES, indent=2, ensure_ascii=False), encoding="utf-8")
     matches_path.write_text(json.dumps(MATCHES, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"wrote {len(CANDIDATES)} candidates -> {resumes_path}")
+
+    location_path = OUT_DIR / "synthetic_location.json"
+    university_path = OUT_DIR / "synthetic_master_universities.csv"
+    company_path = OUT_DIR / "synthetic_company_ranks.json"
+    _write_location_json(location_path)
+    _write_university_csv(university_path)
+    _write_company_ranks_json(company_path)
+    print(f"wrote {len(_LOCATIONS)} locations -> {location_path}")
+    print(f"wrote {len(_UNIVERSITY_TIERS)} universities -> {university_path}")
+    print(f"wrote {len(_COMPANY_TIERS)} companies -> {company_path}")
     print(f"wrote {len(MATCHES)} match records -> {matches_path}")
 
 

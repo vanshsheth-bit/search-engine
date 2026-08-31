@@ -1,0 +1,29 @@
+{"_id": {"$oid": "synth000000000000000000"}, "name": "Google", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000001"}, "name": "Microsoft", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000002"}, "name": "Amazon", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000003"}, "name": "Oracle", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000004"}, "name": "PayPal", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000005"}, "name": "Infosys", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000006"}, "name": "Tata Consultancy Services", "industry": "various", "company_tier": "HIGH"}
+{"_id": {"$oid": "synth000000000000000007"}, "name": "Wipro", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000008"}, "name": "Cognizant Technology Solutions India", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000009"}, "name": "Cognizant", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000a"}, "name": "Capgemini", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000b"}, "name": "Mindtree", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000c"}, "name": "Mphasis", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000d"}, "name": "Persistent Systems", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000e"}, "name": "Zoho", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000000f"}, "name": "Deloitte", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000010"}, "name": "Rakuten", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000011"}, "name": "Bosch", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000012"}, "name": "Myntra", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000013"}, "name": "Flipkart", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000014"}, "name": "Swiggy", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000015"}, "name": "Zomato", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000016"}, "name": "Paytm", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000017"}, "name": "Ola", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000018"}, "name": "Ernst Young", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth000000000000000019"}, "name": "L T Infotech", "industry": "various", "company_tier": "MEDIUM"}
+{"_id": {"$oid": "synth00000000000000001a"}, "name": "Local IT Solutions", "industry": "various", "company_tier": "LOW"}
+{"_id": {"$oid": "synth00000000000000001b"}, "name": "self employed", "industry": "various", "company_tier": "LOW"}
+{"_id": {"$oid": "synth00000000000000001c"}, "name": "startup", "industry": "various", "company_tier": "MEDIUM"}

@@ -33,9 +33,13 @@ from app.models.schemas import Filter, FilterSpec
 _TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "test_data")
 _RESUMES = os.path.join(_TEST_DATA_DIR, "synthetic_parsedresumes.json")
 _MATCHES = os.path.join(_TEST_DATA_DIR, "synthetic_jdmatchresults.json")
+_LOCATION = os.path.join(_TEST_DATA_DIR, "synthetic_location.json")
+_UNIVERSITIES = os.path.join(_TEST_DATA_DIR, "synthetic_master_universities.csv")
+_COMPANIES = os.path.join(_TEST_DATA_DIR, "synthetic_company_ranks.json")
+_ALL_FIXTURES = (_RESUMES, _MATCHES, _LOCATION, _UNIVERSITIES, _COMPANIES)
 
 pytestmark = pytest.mark.skipif(
-    not (os.path.isfile(_RESUMES) and os.path.isfile(_MATCHES)),
+    not all(os.path.isfile(p) for p in _ALL_FIXTURES),
     reason="synthetic test_data not present in this checkout",
 )
 
@@ -52,14 +56,18 @@ def synthetic():
     _load_company_tiers streams the real ~900MB company_ranks.json on a
     cache miss, so re-clearing it per-test would re-scan that file once per
     test instead of once total."""
-    orig_resumes, orig_matches = C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH
-    C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH = _RESUMES, _MATCHES
+    orig = (C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH,
+            C._LOCATION_JSON_PATH, C._MASTER_UNIVERSITIES_PATH, C._COMPANY_RANKS_PATH)
+    (C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH,
+     C._LOCATION_JSON_PATH, C._MASTER_UNIVERSITIES_PATH, C._COMPANY_RANKS_PATH) = (
+        _RESUMES, _MATCHES, _LOCATION, _UNIVERSITIES, _COMPANIES)
     for fn in (C._load_raw_resumes, C._load_resumes_by_process_id,
                C._load_matches_by_job, C._load_company_tiers,
                C._load_university_tiers, C._load_city_gazetteer):
         fn.cache_clear()
     yield
-    C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH = orig_resumes, orig_matches
+    (C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH,
+     C._LOCATION_JSON_PATH, C._MASTER_UNIVERSITIES_PATH, C._COMPANY_RANKS_PATH) = orig
     for fn in (C._load_raw_resumes, C._load_resumes_by_process_id,
                C._load_matches_by_job, C._load_company_tiers,
                C._load_university_tiers, C._load_city_gazetteer):
@@ -175,6 +183,24 @@ def test_highest_of_multiple_degrees_wins(synthetic):
 def test_freelancer_placeholder_company_gets_no_fake_tier(synthetic):
     backend = C.get_matched_candidates(JOB_BACKEND)
     assert _by_name(backend, "Rahul Mehta").get("company_tier") is None
+    # Contrast: the synthetic company reference data DOES have junk rows for
+    # "self employed"/"startup" (deliberately, to prove the guard is doing
+    # real work, not just returning None because there's no data at all) --
+    # a candidate with a REAL company must still resolve a real tier.
+    assert _by_name(backend, "Priya Nair")["company_tier"] == "High"  # Google
+
+
+def test_college_tier_resolves_for_a_real_elite_institution(synthetic):
+    backend = C.get_matched_candidates(JOB_BACKEND)
+    # IIT Bombay -- a real, unambiguous High-tier institution.
+    assert _by_name(backend, "Priya Nair")["college_tier"] == "High"
+
+
+def test_college_tier_none_for_an_unresolvably_generic_university_name(synthetic):
+    backend = C.get_matched_candidates(JOB_BACKEND)
+    # "Engineering College" alone (no name/city) is deliberately absent from
+    # the synthetic university tiers -- must resolve to no tier, not a guess.
+    assert _by_name(backend, "Ananya Desai").get("college_tier") is None
 
 
 # --------------------------------------------------------------------------- #
