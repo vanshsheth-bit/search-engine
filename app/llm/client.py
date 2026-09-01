@@ -44,8 +44,20 @@ class LLMClient:
         self.timeout = timeout or settings.llm_timeout
         self.max_retries = max_retries or settings.llm_max_retries
 
-    def translate(self, query: str, current_filters: list[dict]) -> LLMOutput:
-        """Translate a recruiter query into structured filter JSON."""
+    def translate(
+        self,
+        query: str,
+        current_filters: list[dict],
+        history: list[dict] | None = None,
+    ) -> LLMOutput:
+        """Translate a recruiter query into structured filter JSON.
+
+        `history`: recent real conversation turns ([{"role": "user"/
+        "assistant", "content": ...}, ...], oldest first), replayed as
+        actual prior chat messages so a short reply ("yes", "no", "actually
+        6") resolves against whatever this system itself just said -- the
+        model reasoning over real context, not a hand-coded extractor for
+        every clarify shape."""
         user_msg = (
             f"CURRENT FILTERS: {json.dumps(current_filters)}\n"
             f"NEW QUERY: {query.strip()}"
@@ -54,10 +66,19 @@ class LLMClient:
             "model": self.model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
+                *(history or []),
                 {"role": "user", "content": user_msg},
             ],
             "format": _JSON_SCHEMA,
             "stream": False,
+            # Thinking OFF: on this CPU-only hardware, thinking adds a
+            # multi-minute tax to EVERY query regardless of complexity (even
+            # "hi") without reliably fixing the one failure mode it was
+            # tried for (a short confirm-reply like "Yes" to a pending
+            # clarify) -- see service.py's PendingClarify.value, which
+            # resolves that case deterministically instead, without any LLM
+            # call at all, so it can't hallucinate or need to "think".
+            "think": False,
             "options": {"temperature": 0, "num_ctx": settings.num_ctx},
         }
 

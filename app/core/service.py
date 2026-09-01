@@ -16,6 +16,7 @@ from app.core.skill_taxonomy import expand_skill_filters
 from app.core.validation import validate_filters
 from app.llm.client import LLMClient
 from app.models.schemas import (
+    ChatTurn,
     Filter,
     FilterResponse,
     FilterSpec,
@@ -29,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 _NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
+# Bounded so prompt size (and latency, already the scarce resource here)
+# doesn't grow without limit over a long session -- last 4 exchanges is
+# enough context for "yes"/"no"/short-correction replies to resolve against
+# without re-litigating an entire conversation on every turn.
+_MAX_HISTORY_TURNS = 8
+
+
+def _append_history(
+    history: list[ChatTurn], user_text: str, assistant_text: str | None
+) -> list[ChatTurn]:
+    new = list(history)
+    new.append(ChatTurn(role="user", content=user_text))
+    if assistant_text:
+        new.append(ChatTurn(role="assistant", content=assistant_text))
+    return new[-_MAX_HISTORY_TURNS:]
+
 
 def _extract_number(text: str) -> float | int | None:
     m = _NUMBER_RE.search(text)
@@ -36,6 +53,27 @@ def _extract_number(text: str) -> float | int | None:
         return None
     n = float(m.group(1))
     return int(n) if n.is_integer() else n
+
+
+_YES_WORDS = {"yes", "yeah", "yep", "yup", "correct", "right", "confirm",
+              "confirmed", "sure", "ok", "okay", "y"}
+_NO_WORDS = {"no", "nope", "nah", "n", "incorrect", "wrong"}
+
+
+def _extract_yes_no(text: str) -> bool | None:
+    words = re.findall(r"[a-z]+", text.lower())
+    if not words:
+        return None
+    # Only trust this for a SHORT reply that's basically just the word
+    # itself (e.g. "Yes", "yeah sure") -- a longer sentence containing
+    # "yes" incidentally isn't necessarily a plain confirmation.
+    if len(words) > 3:
+        return None
+    if any(w in _YES_WORDS for w in words) and not any(w in _NO_WORDS for w in words):
+        return True
+    if any(w in _NO_WORDS for w in words) and not any(w in _YES_WORDS for w in words):
+        return False
+    return None
 
 
 def _extract_unit(text: str) -> str | None:
@@ -82,6 +120,7 @@ class FilterService:
                 answer = answer_lookup(resolution.candidate, current.pending_lookup_field)
                 self.store.set(session_id, job_id, SessionState(
                     spec=spec, last_candidates=current.last_candidates,
+                    history=_append_history(current.history, query, answer),
                 ))
                 return FilterResponse(
                     status="answer", logic=spec.logic,
@@ -102,19 +141,54 @@ class FilterService:
         # would wrongly reduce to just the number and silently drop the
         # rest of -- let that fall through to the LLM instead.
         if current.pending_clarify and len(query.split()) <= 6:
+            pc = current.pending_clarify
+
+            # CONFIRM-style clarify ("Should the experience be at least 7
+            # years?"): the value is already known (see
+            # LLMOutput.clarify_value) -- a bare "yes"/"no" resolves
+            # entirely in code, no LLM call, so it can't hallucinate a value
+            # it was never actually given (confirmed failure mode: qwen3:8b
+            # asked for "Yes"/"No" without thinking on invented a false
+            # "field not supported" claim instead of just applying the
+            # already-known value -- this bypasses needing the LLM to
+            # re-derive it at all).
+            if pc.value is not None:
+                answer = _extract_yes_no(query)
+                if answer is True:
+                    filt = Filter(field=pc.field, operator=pc.operator,
+                                   value=pc.value, skill=pc.skill, unit=pc.unit)
+                    merged = merge_filters(spec.filters, [filt])
+                    return self._validate_apply_persist(
+                        merged, spec.logic, job_id, session_id, query, current.history,
+                    )
+                if answer is False:
+                    question = "Okay -- what should it be instead?"
+                    self.store.set(session_id, job_id, SessionState(
+                        spec=spec, last_candidates=current.last_candidates,
+                        history=_append_history(current.history, query, question),
+                    ))
+                    return FilterResponse(
+                        status="clarify", question=question,
+                        logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
+                    )
+                # Not a recognizable yes/no -- might be a new number
+                # ("actually make it 8") or a fresh query; fall through.
+
             value = _extract_number(query)
             if value is not None:
-                pc = current.pending_clarify
                 filt = Filter(field=pc.field, operator=pc.operator, value=value, skill=pc.skill)
                 if pc.field == "notice_period":
                     filt.unit = _extract_unit(query) or "days"
                 merged = merge_filters(spec.filters, [filt])
-                return self._validate_apply_persist(merged, spec.logic, job_id, session_id)
+                return self._validate_apply_persist(
+                    merged, spec.logic, job_id, session_id, query, current.history,
+                )
             # No number in the reply -- treat as abandoning the pending
             # clarification and fall through to a fresh query below.
 
+        history_msgs = [t.model_dump() for t in current.history]
         llm_out: LLMOutput = self.llm.translate(
-            query, [f.model_dump(exclude_none=True) for f in spec.filters]
+            query, [f.model_dump(exclude_none=True) for f in spec.filters], history_msgs
         )
 
         if llm_out.intent == "CLARIFY":
@@ -124,14 +198,18 @@ class FilterService:
                     field=llm_out.clarify_field,
                     operator=llm_out.clarify_operator or "gte",
                     skill=llm_out.clarify_skill,
+                    value=llm_out.clarify_value,
+                    unit=llm_out.clarify_unit,
                 )
+            question = llm_out.question or "Could you clarify your filter?"
             self.store.set(session_id, job_id, SessionState(
                 spec=spec, last_candidates=current.last_candidates,
                 pending_clarify=pending,
+                history=_append_history(current.history, query, question),
             ))
             return FilterResponse(
                 status="clarify",
-                question=llm_out.question or "Could you clarify your filter?",
+                question=question,
                 options=llm_out.options,
                 logic=spec.logic,
                 filters=spec.filters,
@@ -139,16 +217,23 @@ class FilterService:
             )
 
         if llm_out.intent == "UNSUPPORTED_FILTER":
+            message = llm_out.message or "That filter is not supported."
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                history=_append_history(current.history, query, message),
+            ))
             return FilterResponse(
                 status="unsupported",
-                message=llm_out.message or "That filter is not supported.",
+                message=message,
                 logic=spec.logic,
                 filters=spec.filters,
                 chips=to_chips(spec.filters),
             )
 
         if llm_out.intent == "LOOKUP":
-            return self._answer_lookup(llm_out, current, spec, job_id, session_id)
+            return self._answer_lookup(
+                llm_out, current, spec, job_id, session_id, query,
+            )
 
         # FILTER_CANDIDATES. Expand skill concepts ("machine learning" ->
         # its real tools) against the curated taxonomy before merging into
@@ -157,7 +242,7 @@ class FilterService:
         expanded_filters = expand_skill_filters(llm_out.filters)
         merged = merge_filters(spec.filters, expanded_filters)
         return self._validate_apply_persist(
-            merged, llm_out.logic, job_id, session_id,
+            merged, llm_out.logic, job_id, session_id, query, current.history,
             extra_message=llm_out.message,
         )
 
@@ -168,7 +253,7 @@ class FilterService:
     # ------------------------------------------------------------------ #
     def _answer_lookup(
         self, llm_out: LLMOutput, current: SessionState, spec: FilterSpec,
-        job_id: str, session_id: str,
+        job_id: str, session_id: str, query: str,
     ) -> FilterResponse:
         base = dict(
             status="unsupported", logic=spec.logic,
@@ -176,37 +261,46 @@ class FilterService:
         )
 
         if not llm_out.lookup_field:
-            return FilterResponse(
-                **base,
-                message="I wasn't sure what you were asking about that "
-                        "candidate -- could you rephrase?",
-            )
+            message = ("I wasn't sure what you were asking about that "
+                       "candidate -- could you rephrase?")
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                history=_append_history(current.history, query, message),
+            ))
+            return FilterResponse(**base, message=message)
 
         resolution = resolve_candidate(llm_out.candidate_ref, current.last_candidates)
 
         if resolution.candidate is None and not resolution.ambiguous_names:
-            return FilterResponse(
-                **base,
-                message="I don't have a candidate in view to answer that about "
-                        "-- search for someone first.",
-            )
+            message = ("I don't have a candidate in view to answer that about "
+                       "-- search for someone first.")
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                history=_append_history(current.history, query, message),
+            ))
+            return FilterResponse(**base, message=message)
 
         if resolution.candidate is None:
             # Remember what was being asked, so the next message (a bare
             # name, typed or clicked) can complete it directly.
+            question = f"Which candidate did you mean -- {', '.join(resolution.ambiguous_names)}?"
             self.store.set(session_id, job_id, SessionState(
                 spec=spec, last_candidates=current.last_candidates,
                 pending_lookup_field=llm_out.lookup_field,
+                history=_append_history(current.history, query, question),
             ))
-            names = ", ".join(resolution.ambiguous_names)
             return FilterResponse(
                 status="clarify",
                 logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
-                question=f"Which candidate did you mean -- {names}?",
+                question=question,
                 options=resolution.ambiguous_names,
             )
 
         answer = answer_lookup(resolution.candidate, llm_out.lookup_field)
+        self.store.set(session_id, job_id, SessionState(
+            spec=spec, last_candidates=current.last_candidates,
+            history=_append_history(current.history, query, answer),
+        ))
         return FilterResponse(
             status="answer",
             logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
@@ -238,16 +332,27 @@ class FilterService:
     # ------------------------------------------------------------------ #
     def _validate_apply_persist(
         self, filters: list[Filter], logic: str, job_id: str, session_id: str,
+        query: str | None = None, history: list[ChatTurn] | None = None,
         extra_message: str | None = None,
     ) -> FilterResponse:
         available = get_available_fields(job_id)
         result = validate_filters(filters, available)
+        history = history if history is not None else []
 
         if not result.ok:
             status = "unsupported" if result.unsupported else "error"
             # Persist only the filters that were valid before the bad one?
-            # Safer: do not mutate stored state on invalid input.
+            # Safer: do not mutate stored state on invalid input -- but the
+            # conversation still happened, so still remember it (a later
+            # short reply may refer back to this rejection).
             current = self.store.get(session_id, job_id)
+            if query is not None:
+                self.store.set(session_id, job_id, SessionState(
+                    spec=current.spec, last_candidates=current.last_candidates,
+                    pending_clarify=current.pending_clarify,
+                    pending_lookup_field=current.pending_lookup_field,
+                    history=_append_history(history, query, result.error),
+                ))
             return FilterResponse(
                 status=status,
                 message=result.error,
@@ -263,7 +368,17 @@ class FilterService:
         # Persist the new valid state, including who's now in view -- this
         # is what a later LOOKUP ("which college did he go to") resolves
         # against.
-        self.store.set(session_id, job_id, SessionState(spec=spec, last_candidates=filtered))
+        assistant_summary = (
+            f"Applied filters: {', '.join(c.label for c in to_chips(spec.filters))}"
+            if spec.filters else "Cleared all filters"
+        )
+        self.store.set(session_id, job_id, SessionState(
+            spec=spec, last_candidates=filtered,
+            history=(
+                _append_history(history, query, assistant_summary)
+                if query is not None else history
+            ),
+        ))
 
         # One or more filters in this request were dropped (unsupported field,
         # bad value, etc.) but at least one other filter was still valid --

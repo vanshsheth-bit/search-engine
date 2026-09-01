@@ -69,6 +69,17 @@ class LLMOutput(BaseModel):
     clarify_field: Optional[str] = None
     clarify_skill: Optional[str] = None
     clarify_operator: Optional[str] = None
+    # Set ONLY for a CONFIRM-style clarify -- one where a specific candidate
+    # value is already known and the question is just asking the recruiter
+    # to confirm/deny it (e.g. "Should the experience be at least 7 years?"
+    # -> clarify_value=7), as opposed to an OPEN clarify with no candidate
+    # value yet (e.g. "How many years of experience?"). Lets a bare "yes"/
+    # "no" reply resolve deterministically in code (see PendingClarify.value
+    # and service.py) instead of needing the LLM to re-derive a number that
+    # was only ever stated in the natural-language question text -- which it
+    # structurally cannot recover from "yes" alone with no memory of it.
+    clarify_value: Optional[Union[str, int, float]] = None
+    clarify_unit: Optional[str] = None
     # UNSUPPORTED_FILTER
     message: Optional[str] = None
     # LOOKUP -- a question about ONE specific already-shown candidate, not a
@@ -134,6 +145,25 @@ class PendingClarify(BaseModel):
     field: str
     operator: str
     skill: Optional[str] = None
+    # Set for a CONFIRM-style clarify (see LLMOutput.clarify_value) -- lets
+    # a bare "yes"/"no" reply resolve deterministically: yes -> apply this
+    # exact value, no LLM call, no chance of hallucinating a value that was
+    # only ever in the question's natural-language text.
+    value: Optional[Union[str, int, float]] = None
+    unit: Optional[str] = None
+
+
+class ChatTurn(BaseModel):
+    """One turn of real conversation history, sent back to the LLM verbatim
+    as prior chat messages (not summarized/hand-parsed) -- so a short reply
+    like "yes"/"no"/"actually make it 6" resolves against whatever was
+    actually just said, generally, instead of needing a hand-coded
+    extractor for every possible clarify shape. The deterministic
+    fast-paths (pending_lookup_field, pending_clarify) still short-circuit
+    the common cases without an LLM call; history is what makes the LLM
+    fallback actually capable for everything else, instead of failing."""
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class SessionState(BaseModel):
@@ -149,3 +179,6 @@ class SessionState(BaseModel):
     # Same idea for CLARIFY: set whenever the LLM identified which field a
     # clarifying question was about (see LLMOutput.clarify_field).
     pending_clarify: Optional[PendingClarify] = None
+    # Recent real conversation turns (bounded, see service._append_history),
+    # replayed to the LLM as actual prior chat messages on every call.
+    history: list[ChatTurn] = Field(default_factory=list)

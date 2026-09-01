@@ -28,10 +28,17 @@ since it's more specific.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 from functools import lru_cache
 
+import requests
+
+from app.core.config import settings
 from app.core.llm_classifier import UNKNOWN, PersistentCache, classify_new_values
+
+logger = logging.getLogger(__name__)
 
 _ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 _CACHE_PATH = os.getenv(
@@ -160,3 +167,160 @@ def warm_industry_cache(industries: list[str], progress_callback=None) -> int:
         ),
         progress_callback=progress_callback,
     )
+
+
+_EVIDENCE_DIMENSION = (
+    "whether the company is primarily a PRODUCT company (builds and sells "
+    "its own software/product, e.g. a SaaS company) or a SERVICE company "
+    "(provides IT services/consulting/outsourcing for other companies, e.g. "
+    "a systems integrator), or BOTH if it genuinely does both at meaningful scale"
+)
+
+
+def _evidence_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "classifications": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "category": {"type": "string", "enum": CATEGORIES + [UNKNOWN]},
+                    },
+                    "required": ["index", "category"],
+                },
+            },
+        },
+        "required": ["classifications"],
+    }
+
+
+def warm_cache_with_evidence(
+    evidence_by_company: dict[str, list[str]],
+    progress_callback=None,
+    batch_size: int = 15,
+    timeout: float = 300.0,
+    max_retries: int = 2,
+) -> int:
+    """Second-pass classification for companies STILL Unknown after
+    warm_cache/warm_industry_cache -- the fix for the ~85% of companies the
+    model has no specific knowledge of by bare name alone (see module
+    docstring). Uses real resume evidence instead (see
+    candidates.get_company_evidence): actual excerpts from people who
+    worked there, e.g. "provided ... services to clients for customization
+    ERP projects" (Service) vs "owned our platform's roadmap" (Product) --
+    something the model can reason over instead of trying to recall.
+
+    Confirmed on this dataset: "Thirdware Solutions Ltd" (Unknown by name
+    alone) correctly resolves to "Service" once given its actual resume
+    excerpt -- see the classify_new_values module docstring for why a bare
+    name so often fails for real (non-famous) companies in the first place.
+
+    Deliberately indexed by POSITION in the batch, not by echoing the
+    company name back (unlike classify_new_values) -- once a name is shown
+    to the model alongside a paragraph of resume text, round-tripping it
+    back verbatim is fragile (truncation, minor rewording); an index is
+    unambiguous regardless of what the model does with the surrounding
+    text.
+
+    Only ever called for companies ALREADY Unknown (or uncached) in the
+    direct cache -- re-classifying an already-answered company with
+    evidence and getting a DIFFERENT category would be a silent behavior
+    change with no clear "which one is right" signal. That's out of scope
+    here; use scripts/set_company_type.py for a manual correction instead.
+
+    Same infra-failure-vs-real-Unknown distinction as classify_new_values:
+    a failed batch (timeout, bad JSON) is dropped, not cached as Unknown --
+    left to retry on the next warmup run."""
+    cache = _cache()
+    existing = cache.get_all()
+    todo = [
+        (name, ev) for name, ev in evidence_by_company.items()
+        if ev and existing.get(name.strip().lower(), UNKNOWN) == UNKNOWN
+    ]
+    if not todo:
+        return 0
+
+    schema = _evidence_schema()
+    total_new = 0
+
+    for i in range(0, len(todo), batch_size):
+        batch = todo[i:i + batch_size]
+        lines = []
+        for idx, (name, excerpts) in enumerate(batch):
+            ev_text = " | ".join(excerpts[:3])
+            lines.append(
+                f'{idx}. {name}\n   Resume excerpts from people who worked '
+                f'there: "{ev_text}"'
+            )
+        prompt = (
+            f"For each numbered company below, classify it as "
+            f"{' or '.join(CATEGORIES)} regarding: {_EVIDENCE_DIMENSION}\n\n"
+            "Use the resume excerpts as real evidence of what people who "
+            "worked there actually did -- client/customer/engagement/"
+            "outsourcing language points to Service; own-product/roadmap/"
+            "users language points to Product. A role at a Service company "
+            "can still use product-sounding language when staffed on a "
+            "client's product (e.g. \"owned the roadmap for the client's "
+            "platform\") -- read for the EMPLOYER's business model, not just "
+            f"individual phrases. If the excerpts are genuinely ambiguous or "
+            f"don't tell you enough, use \"{UNKNOWN}\" rather than guessing.\n\n"
+            "Return one classification per numbered item, with \"index\" "
+            "matching the number exactly, same count as items given.\n\n"
+            + "\n".join(lines)
+        )
+        payload = {
+            "model": settings.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "format": schema,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0, "num_ctx": settings.num_ctx},
+        }
+
+        parsed: dict[int, str] | None = None
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.post(
+                    f"{settings.ollama_url}/api/chat", json=payload, timeout=timeout,
+                )
+                resp.raise_for_status()
+                data = json.loads(resp.json()["message"]["content"])
+                parsed = {
+                    c["index"]: c["category"]
+                    for c in data.get("classifications", [])
+                    if isinstance(c, dict) and isinstance(c.get("index"), int)
+                    and c.get("category") in CATEGORIES + [UNKNOWN]
+                }
+                break
+            except (requests.RequestException, KeyError, json.JSONDecodeError,
+                    ValueError, TypeError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "Evidence classification batch attempt %d/%d failed "
+                    "(%d items): %s", attempt, max_retries, len(batch), exc,
+                )
+
+        if parsed is None:
+            logger.error(
+                "Evidence classification batch failed after %d attempts "
+                "(%d items skipped, will retry on next warmup run): %s",
+                max_retries, len(batch), last_exc,
+            )
+            continue
+
+        batch_results = {
+            name.strip().lower(): parsed[idx]
+            for idx, (name, _) in enumerate(batch)
+            if idx in parsed
+        }
+        if batch_results:
+            cache.update(batch_results)
+            total_new += len(batch_results)
+            if progress_callback:
+                progress_callback(batch_results)
+
+    return total_new

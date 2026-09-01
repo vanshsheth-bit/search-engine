@@ -16,7 +16,7 @@ class FakeLLM:
         self.output = output
         self.calls = 0
 
-    def translate(self, query, current_filters):
+    def translate(self, query, current_filters, history=None):
         self.calls += 1
         return self.output
 

@@ -183,6 +183,23 @@ FEW_SHOTS = [
          "clarify_field": "experience", "clarify_operator": "gte"},
     ),
     (
+        # Confirm-style CLARIFY: the recruiter already typed an ambiguous
+        # umbrella word ("senior") that got resolved to a proposed number in
+        # an EARLIER turn, and this turn is genuinely re-confirming that
+        # specific number, not receiving a fresh explicit one -- so
+        # "clarify_value" is set (unlike the OPEN "experienced" example
+        # above, which has no candidate number yet). A bare "yes"/"no" reply
+        # to this resolves in code without needing you to re-derive 7 from
+        # nothing.
+        "CURRENT FILTERS: [{\"field\": \"experience\", \"operator\": \"gte\", "
+        "\"value\": 5}]\nNEW QUERY: Actually, I meant senior, more like 7+.",
+        {"intent": "CLARIFY",
+         "question": "Should the experience be at least 7 years?",
+         "options": ["Yes", "No"],
+         "clarify_field": "experience", "clarify_operator": "gte",
+         "clarify_value": 7},
+    ),
+    (
         # No "clarify_field" here -- proximity/distance isn't a real
         # ALLOWED_FIELDS concept (there's no location-distance filter), so
         # this CLARIFY has no deterministic field to resolve into once
@@ -428,6 +445,16 @@ The type in parentheses tells you the family:
 - "boolean" fields (relocation) -- "equals" true/false only.
 
 RULES:
+0. You may see earlier turns of this SAME conversation before the final
+   NEW QUERY -- your own prior "assistant" questions/messages and the
+   user's replies to them. If NEW QUERY is a short reply ("yes", "no",
+   "correct", a bare number, "that one") that only makes sense as an answer
+   to YOUR most recent message in that history, resolve it using that
+   context: figure out what you actually asked, apply the user's answer to
+   it, and emit the real filter (or updated CURRENT FILTERS) directly --
+   do NOT re-ask the same question again, and do NOT emit another CLARIFY
+   for something the history already answered. Only fall back to CLARIFY if
+   the reply is still genuinely ambiguous even given that context.
 1. If the query updates a field already present in CURRENT FILTERS (e.g. a new
    location or a changed experience threshold), REPLACE that filter. Do not
    emit a conflicting duplicate.
@@ -496,6 +523,24 @@ RULES:
    one field (e.g. "near Mumbai" -- distance isn't an ALLOWED_FIELDS concept
    at all, so there is nothing to resolve to) or "show me good candidates"
    (multiple different fields could apply, not resolvable to just one).
+6-clarify-value. If your CLARIFY question is CONFIRMING one specific
+   candidate value you already extracted from NEW QUERY (a "Should it be at
+   least N <unit>?" / yes-or-no style question -- NOT an open "how many/
+   which one?" question with no number in play), you MUST also include
+   "clarify_value" (that exact number) and, for notice_period, "clarify_unit"
+   ("days"/"months"/"years"). This lets a bare "yes"/"no" reply resolve
+   deterministically in code, applying the value you already found --
+   critical, because a bare "yes" sent back to you later, with no memory of
+   this exact number, is NOT something you can reliably recover on your own.
+   Leave clarify_value unset for a genuinely OPEN clarify with no number yet
+   ("How many years of experience are you looking for?").
+   REMINDER (rule 6): if NEW QUERY already states an explicit number for a
+   numeric field (e.g. "actually make it 7 years instead"), that is NOT
+   vague -- apply it directly as FILTER_CANDIDATES, do not CLARIFY/confirm
+   it. Confirm-style CLARIFY is for when you have inferred/assumed a number
+   the query didn't explicitly state (e.g. resolving "senior" to a specific
+   threshold you're proposing), never for a number the recruiter already
+   typed themselves.
 6a-i. NEVER add a filter for a concept the query didn't mention. Every filter
    you output must trace to a specific word/phrase actually in NEW QUERY.
    Two filters is not inherently more correct than one -- a query naming

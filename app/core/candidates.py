@@ -395,6 +395,48 @@ def _load_company_industries_from_ranks() -> dict[str, str]:
     return _load_company_ranks_data()[1]
 
 
+def _industry_for_company(raw: str) -> str | None:
+    """Resolve one company's industry the SAME way _company_tier_for resolves
+    tier (normalize + progressively shorter prefixes) against the SAME
+    underlying map (_load_company_industries_from_ranks, built with
+    _normalize_company-normalized keys) -- a flat `.strip().lower()` lookup
+    against that map would almost never hit, since company_ranks.json names
+    are keyed post-suffix-stripping."""
+    norm = _normalize_company(raw)
+    if _is_company_placeholder(norm):
+        return None
+    industries = _load_company_industries_from_ranks()
+    for prefix in _company_prefixes(norm):
+        industry = industries.get(prefix)
+        if industry:
+            return industry
+    return None
+
+
+def _industry_lookup_for(companies: list[str]) -> dict[str, str]:
+    """{raw company name, normalized the way company_type.company_types_for
+    expects (.strip().lower(), no suffix-stripping): resolved industry}.
+
+    company_types_for does a flat `.strip().lower()` lookup into whatever
+    industry_lookup dict it's given -- it has no normalization/prefix-
+    matching logic of its own (and company_type.py can't import
+    _normalize_company/_company_prefixes here without a circular import, so
+    that resolution has to happen on this side). Passing
+    _load_company_industries_from_ranks() straight through used to mean
+    company_types_for's lookup could only hit by coincidence (when a name
+    had no suffix to strip) -- confirmed 353 real misses on this dataset,
+    including "Tata Consultancy Services Limited" silently never resolving
+    its real, present industry ("information technology and services").
+    Resolving here first, keyed the way the caller actually looks it up,
+    fixes that without changing company_types_for's simple contract."""
+    out: dict[str, str] = {}
+    for c in companies:
+        industry = _industry_for_company(c)
+        if industry:
+            out[c.strip().lower()] = industry
+    return out
+
+
 def _company_tier_for(company_names: list[str]) -> str | None:
     if not company_names:
         return None
@@ -486,7 +528,7 @@ def _adapt_resume(raw: dict) -> dict:
         # falling back to industry-based inference -- see company_type.py's
         # module docstring for why that's what makes this scale) -- never
         # classified live during a request.
-        "company_type": company_types_for(companies, _load_company_industries_from_ranks()),
+        "company_type": company_types_for(companies, _industry_lookup_for(companies)),
         "skills": skills,
         "job_title": job_titles,
         "certification": certifications,
@@ -506,6 +548,48 @@ def _load_raw_resumes() -> list[dict]:
 def _load_resumes_by_process_id() -> dict[str, dict]:
     raw_records = _load_raw_resumes()
     return {r["processId"]: _adapt_resume(r) for r in raw_records if r.get("processId")}
+
+
+# Caps keep a single well-attested company's evidence from blowing up prompt
+# size (already the scarce resource on this hardware -- see llm/client.py).
+_MAX_EVIDENCE_PER_COMPANY = 5
+_MAX_EVIDENCE_CHARS = 400
+
+
+@lru_cache(maxsize=1)
+def _load_company_evidence() -> dict[str, list[str]]:
+    """{company name, normalized the SAME way as company_type.py's cache key
+    (.strip().lower(), no suffix-stripping -- these two normalizations must
+    match exactly or a lookup here silently misses the cache entry):
+    real resume description excerpts, one per DISTINCT PERSON who worked
+    there (not one per job-match row -- the same person's resume appears
+    once per job they were matched against, so naively counting rows over-
+    counts a single person's account as if it were independent evidence).
+
+    Feeds company_type.py's evidence-based classification fallback: a bare
+    company name is often something the model has no specific knowledge of
+    (see that module's docstring -- ~85% Unknown in practice), but real
+    excerpts of what people who worked there actually did are a genuine,
+    scaling signal an LLM can reason over instead of recall."""
+    raw_records = _load_raw_resumes()
+    evidence: dict[str, dict[str, str]] = {}  # company -> {processId: excerpt}
+    for r in raw_records:
+        pid = r.get("processId")
+        if not pid:
+            continue
+        for e in r.get("experience") or []:
+            company = e.get("company")
+            desc = (e.get("description") or "").strip()
+            if not (isinstance(company, str) and company.strip() and desc):
+                continue
+            norm = company.strip().lower()
+            bucket = evidence.setdefault(norm, {})
+            if pid not in bucket:
+                bucket[pid] = desc[:_MAX_EVIDENCE_CHARS]
+    return {
+        name: list(by_person.values())[:_MAX_EVIDENCE_PER_COMPANY]
+        for name, by_person in evidence.items()
+    }
 
 
 @lru_cache(maxsize=1)
@@ -545,6 +629,12 @@ def get_matched_candidates(job_id: str) -> list[dict]:
     human-facing jobId), each carrying their real rankingScore as
     `match_score`. Empty list if the job has no completed matches."""
     return _load_matches_by_job().get(job_id, [])
+
+
+def get_company_evidence() -> dict[str, list[str]]:
+    """Public accessor for scripts/warm_company_types.py -- see
+    _load_company_evidence's docstring."""
+    return _load_company_evidence()
 
 
 def get_available_fields(job_id: str) -> set[str]:

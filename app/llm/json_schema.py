@@ -42,6 +42,8 @@ def build_filter_json_schema() -> dict:
             "clarify_field": {"type": "string", "enum": ALLOWED_FIELDS},
             "clarify_skill": {"type": "string"},
             "clarify_operator": {"type": "string", "enum": sorted(NUMERIC_OPERATORS)},
+            "clarify_value": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+            "clarify_unit": {"type": "string"},
             "message": {"type": "string"},
             "candidate_ref": {"type": "string"},
             "lookup_field": {"type": "string", "enum": ALLOWED_FIELDS},
