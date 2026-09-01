@@ -62,15 +62,15 @@ def synthetic():
      C._LOCATION_JSON_PATH, C._MASTER_UNIVERSITIES_PATH, C._COMPANY_RANKS_PATH) = (
         _RESUMES, _MATCHES, _LOCATION, _UNIVERSITIES, _COMPANIES)
     for fn in (C._load_raw_resumes, C._load_resumes_by_process_id,
-               C._load_matches_by_job, C._load_company_tiers,
-               C._load_university_tiers, C._load_city_gazetteer):
+               C._load_matches_by_job, C._load_company_ranks_data,
+               C._load_university_tiers, C._load_location_data):
         fn.cache_clear()
     yield
     (C._PARSED_RESUMES_PATH, C._JD_MATCH_RESULTS_PATH,
      C._LOCATION_JSON_PATH, C._MASTER_UNIVERSITIES_PATH, C._COMPANY_RANKS_PATH) = orig
     for fn in (C._load_raw_resumes, C._load_resumes_by_process_id,
-               C._load_matches_by_job, C._load_company_tiers,
-               C._load_university_tiers, C._load_city_gazetteer):
+               C._load_matches_by_job, C._load_company_ranks_data,
+               C._load_university_tiers, C._load_location_data):
         fn.cache_clear()
 
 
@@ -134,6 +134,36 @@ def test_missing_location_does_not_crash_and_excludes_from_location_filter(synth
     spec = FilterSpec(logic="AND", filters=[Filter(field="location", operator="equals", value="Mumbai")])
     out = {c["name"] for c in apply_spec(backend, spec)}
     assert "Sameer Khan" not in out
+
+
+# --------------------------------------------------------------------------- #
+# Country: real gazetteer data (country_name, sitting unused in Location.json
+# until this), not an LLM guess -- deterministic, zero hallucination risk.
+# --------------------------------------------------------------------------- #
+def test_country_resolves_from_real_gazetteer_data(synthetic):
+    backend = C.get_matched_candidates(JOB_BACKEND)
+    # Priya Nair is in Bengaluru, India.
+    assert _by_name(backend, "Priya Nair")["country"] == "India"
+    # Hana Tanaka is in Tokyo, Japan -- a different real country.
+    assert _by_name(backend, "Hana Tanaka")["country"] == "Japan"
+
+
+def test_no_location_means_no_country_not_a_crash(synthetic):
+    backend = C.get_matched_candidates(JOB_BACKEND)
+    sameer = _by_name(backend, "Sameer Khan")
+    assert sameer.get("country") is None or "country" not in sameer
+
+
+def test_country_filter_finds_everyone_in_that_country_regardless_of_city(synthetic):
+    # This is the whole point: a country-level query must find candidates
+    # across MULTIPLE different cities in that country, which "location"
+    # (city-level, exact match) structurally cannot do.
+    backend = C.get_matched_candidates(JOB_BACKEND)
+    spec = FilterSpec(logic="AND", filters=[Filter(field="country", operator="equals", value="India")])
+    out = {c["name"] for c in apply_spec(backend, spec)}
+    assert "Priya Nair" in out  # Bengaluru
+    assert "Priya Sharma" in out  # Delhi or Mumbai -- either is India
+    assert "Hana Tanaka" not in out  # Japan, not India
 
 
 # --------------------------------------------------------------------------- #

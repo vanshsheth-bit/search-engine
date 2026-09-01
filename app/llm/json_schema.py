@@ -2,7 +2,12 @@
 decoding, derived from the vocabulary so it never drifts."""
 from __future__ import annotations
 
-from app.core.vocabulary import ALLOWED_FIELDS, ALLOWED_OPERATORS, VALID_INTENTS
+from app.core.vocabulary import (
+    ALLOWED_FIELDS,
+    ALLOWED_OPERATORS,
+    NUMERIC_OPERATORS,
+    VALID_INTENTS,
+)
 
 
 def build_filter_json_schema() -> dict:
@@ -34,6 +39,9 @@ def build_filter_json_schema() -> dict:
             },
             "question": {"type": "string"},
             "options": {"type": "array", "items": {"type": "string"}},
+            "clarify_field": {"type": "string", "enum": ALLOWED_FIELDS},
+            "clarify_skill": {"type": "string"},
+            "clarify_operator": {"type": "string", "enum": sorted(NUMERIC_OPERATORS)},
             "message": {"type": "string"},
             "candidate_ref": {"type": "string"},
             "lookup_field": {"type": "string", "enum": ALLOWED_FIELDS},

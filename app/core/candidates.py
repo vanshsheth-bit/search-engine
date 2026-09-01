@@ -22,6 +22,7 @@ import os
 import re
 from functools import lru_cache
 
+from app.core.company_type import company_types_for
 from app.core.skill_taxonomy import canonicalize
 from app.core.vocabulary import EDUCATION_RANK_LABELS, education_rank
 
@@ -94,11 +95,18 @@ _HISTORICAL_CITY_ALIASES = {
 
 
 @lru_cache(maxsize=1)
-def _load_city_gazetteer() -> dict[str, str]:
-    """lowercased real city name -> canonical city name, from Location.json."""
-    lookup: dict[str, str] = {}
+def _load_location_data() -> tuple[dict[str, str], dict[str, str]]:
+    """Reads Location.json ONCE, returns (city gazetteer, city->country map).
+    country_name was sitting right there in every row, unused -- "candidates
+    in India" was structurally impossible to answer even with a flawless
+    parse, since candidate locations are stored city-level only. This is
+    real, ground-truth geographic data already in this file, not an LLM
+    guess -- deterministic and zero hallucination risk, unlike asking the
+    model "what country is this city in" would be for obscure places."""
+    canonical: dict[str, str] = {}
+    country: dict[str, str] = {}
     if not os.path.isfile(_LOCATION_JSON_PATH):
-        return lookup
+        return canonical, country
     with open(_LOCATION_JSON_PATH, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -109,9 +117,29 @@ def _load_city_gazetteer() -> dict[str, str]:
             except json.JSONDecodeError:
                 continue
             name = d.get("name")
-            if isinstance(name, str) and name.strip():
-                lookup.setdefault(name.strip().lower(), name.strip())
-    return lookup
+            if not (isinstance(name, str) and name.strip()):
+                continue
+            key = name.strip().lower()
+            canonical.setdefault(key, name.strip())
+            country_name = d.get("country_name")
+            if isinstance(country_name, str) and country_name.strip():
+                country.setdefault(key, country_name.strip())
+    return canonical, country
+
+
+def _load_city_gazetteer() -> dict[str, str]:
+    """lowercased real city name -> canonical city name, from Location.json."""
+    return _load_location_data()[0]
+
+
+def _country_for_city(city: str | None) -> str | None:
+    """Country for an already-resolved canonical city name, via the same
+    real gazetteer data -- None if the city isn't in it (e.g. it came from
+    the crude fallback heuristic rather than a real gazetteer match), same
+    "absent, not guessed" semantics as everywhere else in this engine."""
+    if not city:
+        return None
+    return _load_location_data()[1].get(city.strip().lower())
 
 
 def _canonicalize_city(name: str | None) -> str | None:
@@ -320,11 +348,21 @@ def _needed_company_names(raw_records: list[dict]) -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _load_company_tiers() -> dict[str, str]:
+def _load_company_ranks_data() -> tuple[dict[str, str], dict[str, str]]:
+    """Streams company_ranks.json (~900MB) ONCE, returns (tier map, industry
+    map) together -- industry sits right there in the same rows as tier,
+    previously read and discarded. This is what makes company-type
+    classification scale: instead of asking an LLM to know ~1,200 individual
+    (mostly obscure) company names, look up each one's real, already-present
+    industry (94.7% of real companies in this dataset have one here) and
+    classify the ~130 distinct INDUSTRY categories once instead -- a small,
+    tractable, well-known set ("computer software", "banking") the model
+    reliably knows, unlike specific small companies."""
     needed = _needed_company_names(_load_raw_resumes())
-    exact: dict[str, str] = {}
+    tiers: dict[str, str] = {}
+    industries: dict[str, str] = {}
     if not needed or not os.path.isfile(_COMPANY_RANKS_PATH):
-        return exact
+        return tiers, industries
     with open(_COMPANY_RANKS_PATH, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -334,13 +372,27 @@ def _load_company_tiers() -> dict[str, str]:
                 d = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            name, tier = d.get("name"), d.get("company_tier")
-            if not isinstance(name, str) or tier not in ("LOW", "MEDIUM", "HIGH"):
-                continue  # also drops the malformed non-tier junk values seen in this file
+            name = d.get("name")
+            if not isinstance(name, str):
+                continue
             norm = _normalize_company(name)
-            if norm in needed:
-                exact.setdefault(norm, tier.title())  # -> "Low"/"Medium"/"High", matching college_tier's casing
-    return exact
+            if norm not in needed:
+                continue
+            tier = d.get("company_tier")
+            if tier in ("LOW", "MEDIUM", "HIGH"):
+                tiers.setdefault(norm, tier.title())  # -> "Low"/"Medium"/"High", matching college_tier's casing
+            industry = d.get("industry")
+            if isinstance(industry, str) and industry.strip():
+                industries.setdefault(norm, industry.strip().lower())
+    return tiers, industries
+
+
+def _load_company_tiers() -> dict[str, str]:
+    return _load_company_ranks_data()[0]
+
+
+def _load_company_industries_from_ranks() -> dict[str, str]:
+    return _load_company_ranks_data()[1]
 
 
 def _company_tier_for(company_names: list[str]) -> str | None:
@@ -411,16 +463,30 @@ def _adapt_resume(raw: dict) -> dict:
     gaps = raw.get("gaps") or []
     longest_gap_months = max((g.get("gap_months") or 0) for g in gaps) if gaps else 0
 
+    resolved_location = _current_location(personal, experience)
     candidate = {
         "id": raw.get("processId"),
         "name": personal.get("name"),
-        "location": _current_location(personal, experience),
+        "location": resolved_location,
+        # From the SAME real gazetteer data as location, not an LLM guess --
+        # deterministic, and absent (not guessed) when the location came
+        # from the crude fallback heuristic rather than a real match.
+        "country": _country_for_city(resolved_location),
         "experience": _total_experience_years(raw.get("totalExperience")),
         "education": _highest_education(education),
         "university": universities,
         "college_tier": _college_tier_for(universities),
         "company": companies,
         "company_tier": _company_tier_for(companies),
+        # The SET of types across all their companies, not a single "best"
+        # winner (unlike company_tier) -- someone who worked at both
+        # Infosys (Service) and Google (Product) genuinely has both, and a
+        # "product-based" filter should find them via either. Only ever
+        # populated from persistent caches (direct per-company classification,
+        # falling back to industry-based inference -- see company_type.py's
+        # module docstring for why that's what makes this scale) -- never
+        # classified live during a request.
+        "company_type": company_types_for(companies, _load_company_industries_from_ranks()),
         "skills": skills,
         "job_title": job_titles,
         "certification": certifications,
@@ -489,6 +555,8 @@ def get_available_fields(job_id: str) -> set[str]:
     for c in candidates:
         if "location" in c:
             available.add("location")
+        if "country" in c:
+            available.add("country")
         if "experience" in c:
             available.add("experience")
         if "education" in c:
@@ -513,4 +581,6 @@ def get_available_fields(job_id: str) -> set[str]:
             available.add("certification")
         if "employment_gap_months" in c:
             available.add("employment_gap_months")
+        if "company_type" in c:
+            available.add("company_type")
     return available

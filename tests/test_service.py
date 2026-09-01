@@ -150,6 +150,52 @@ def test_lookup_with_no_candidates_shown_is_honest():
     assert "search for someone first" in resp.message.lower()
 
 
+def test_clarify_reply_resolves_deterministically_without_llm():
+    # Regression: clicking a CLARIFY option ("2+ years") used to be re-sent
+    # to the LLM with zero memory of the question -- a bare fragment like
+    # that isn't reliably interpretable in isolation, so it just asked the
+    # same question again instead of ever producing a filter.
+    store = InMemorySessionStore()
+    clarify_llm = FakeLLM(LLMOutput(
+        intent="CLARIFY", question="What minimum years of experience should I use?",
+        options=["2+ years", "3+ years", "5+ years"],
+        clarify_field="experience", clarify_operator="gte",
+    ))
+    svc1 = FilterService(llm=clarify_llm, store=store)
+    r1 = svc1.filter_by_query("candidate with experience", job_id=JOB, session_id="s1")
+    assert r1.status == "clarify"
+
+    # Reply with an option (as clicking one would submit). A DIFFERENT fake
+    # LLM that would return the wrong thing if it were ever called -- this
+    # must resolve directly against the pending clarification instead.
+    wrong_llm = FakeLLM(LLMOutput(intent="CLARIFY", question="asked again wrongly"))
+    svc2 = FilterService(llm=wrong_llm, store=store)
+    r2 = svc2.filter_by_query("2+ years", job_id=JOB, session_id="s1")
+    assert r2.status in ("ok", "no_match")
+    assert any(f.field == "experience" and f.operator == "gte" and f.value == 2 for f in r2.filters)
+    assert wrong_llm.calls == 0  # never invoked -- resolved deterministically
+
+
+def test_clarify_reply_falls_through_to_llm_when_not_a_plausible_answer():
+    store = InMemorySessionStore()
+    clarify_llm = FakeLLM(LLMOutput(
+        intent="CLARIFY", question="What minimum years of experience should I use?",
+        options=["2+ years", "3+ years", "5+ years"],
+        clarify_field="experience", clarify_operator="gte",
+    ))
+    svc1 = FilterService(llm=clarify_llm, store=store)
+    svc1.filter_by_query("candidate with experience", job_id=JOB, session_id="s2")
+
+    # A reply with no number in it isn't a plausible answer -- must fall
+    # through to a fresh LLM call rather than get stuck.
+    fresh_llm = FakeLLM(LLMOutput(intent="FILTER_CANDIDATES", logic="AND",
+                filters=[Filter(field="location", operator="equals", value="Mumbai")]))
+    svc2 = FilterService(llm=fresh_llm, store=store)
+    r2 = svc2.filter_by_query("actually show me Mumbai instead", job_id=JOB, session_id="s2")
+    assert fresh_llm.calls == 1
+    assert any(f.field == "location" for f in r2.filters)
+
+
 def test_reset_clears_state():
     store = InMemorySessionStore()
     svc = FilterService(

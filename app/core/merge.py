@@ -6,6 +6,7 @@ from app.models.schemas import Chip, Filter
 _OP_SYMBOL = {"gte": "≥", "lte": "≤", "gt": ">", "lt": "<"}
 _FIELD_ICON = {
     "location": "📍",
+    "country": "🌍",
     "experience": "🧭",
     "skill": "🧩",
     "skill_experience": "🧩",
@@ -19,6 +20,7 @@ _FIELD_ICON = {
     "job_title": "💼",
     "certification": "📜",
     "employment_gap_months": "🕳️",
+    "company_type": "🏭",
 }
 
 
@@ -71,6 +73,10 @@ def chip_label(f: Filter) -> str:
     if f.field == "company":
         prefix = "Not at " if f.operator in {"not_contains", "not_equals"} else ""
         return f"{icon} {prefix}{f.value}".strip()
+    if f.field == "company_type":
+        label = "/".join(f.value) if isinstance(f.value, list) else f.value
+        prefix = "Not " if f.operator in {"not_contains", "not_in", "not_equals"} else ""
+        return f"{icon} {prefix}{label}-based".strip()
     if f.field == "job_title":
         prefix = "Not " if f.operator in {"not_contains", "not_equals"} else ""
         return f"{icon} {prefix}{f.value}".strip()

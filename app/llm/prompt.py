@@ -52,6 +52,22 @@ FEW_SHOTS = [
          "filters": [{"field": "location", "operator": "equals", "value": "Mumbai"}]},
     ),
     (
+        # "location" is a specific CITY; a country name is a DIFFERENT field
+        # ("country") -- do not put a country into "location" (candidate
+        # locations are stored city-level, so "location equals India" could
+        # never match anyone even with a flawless parse) and do not put a
+        # city into "country" either.
+        "CURRENT FILTERS: []\nNEW QUERY: Show candidates in India.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "country", "operator": "equals", "value": "India"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Candidates based in the US with Python experience.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "country", "operator": "equals", "value": "United States"},
+                     {"field": "skill", "operator": "contains", "value": "Python"}]},
+    ),
+    (
         "CURRENT FILTERS: []\nNEW QUERY: Only candidates with 5+ years of Python experience.",
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "skill_experience", "operator": "gte",
@@ -147,13 +163,42 @@ FEW_SHOTS = [
         "CURRENT FILTERS: []\nNEW QUERY: Show experienced candidates.",
         {"intent": "CLARIFY",
          "question": "What minimum years of experience should I use?",
-         "options": ["2+ years", "3+ years", "5+ years"]},
+         "options": ["2+ years", "3+ years", "5+ years"],
+         "clarify_field": "experience", "clarify_operator": "gte"},
     ),
     (
-        "CURRENT FILTERS: []\nNEW QUERY: Show candidates near Mumbai.",
+        # Confirmed live: "mid level" got silently converted to a guessed
+        # "experience lte 5" with no question asked, in a test where
+        # "senior"/"experienced" correctly asked first every time. Same
+        # rule, same forbidden-guessing logic -- "mid level"/"mid-level" is
+        # exactly as vague as "senior" or "experienced" (could mean a 3-year
+        # floor to one recruiter, 5 to another) and must CLARIFY too. Ask
+        # for a single minimum, same shape as the "experienced" example
+        # above -- not a two-sided range, which isn't resolvable into one
+        # gte/lte filter anyway.
+        "CURRENT FILTERS: []\nNEW QUERY: Mid level software developer.",
         {"intent": "CLARIFY",
-         "question": "What distance from Mumbai should I consider?",
-         "options": ["10 km", "25 km", "50 km"]},
+         "question": "What minimum years of experience counts as \"mid level\" here?",
+         "options": ["2+ years", "3+ years", "5+ years"],
+         "clarify_field": "experience", "clarify_operator": "gte"},
+    ),
+    (
+        # No "clarify_field" here -- proximity/distance isn't a real
+        # ALLOWED_FIELDS concept (there's no location-distance filter), so
+        # this CLARIFY has no deterministic field to resolve into once
+        # answered. Only set clarify_field/clarify_operator when the
+        # question genuinely reduces to a threshold on ONE real field.
+        #
+        # "Near <city>" is NOT a CLARIFY -- there is no proximity/distance
+        # field in ALLOWED_FIELDS at all (no lat/long data, no distance
+        # calculation anywhere in this system). Asking "what distance should
+        # I consider?" would be a dead end no matter how it's answered --
+        # honest UNSUPPORTED_FILTER, not a question with no real destination.
+        "CURRENT FILTERS: []\nNEW QUERY: Show candidates near Mumbai.",
+        {"intent": "UNSUPPORTED_FILTER",
+         "message": "Proximity/distance-based search isn't supported -- "
+                     "only an exact city name (e.g. \"Mumbai\") can be "
+                     "matched, not \"near\" or \"within N km\" of one."},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Show candidates with a green card.",
@@ -194,10 +239,42 @@ FEW_SHOTS = [
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates with product company experience, not services.",
-        {"intent": "UNSUPPORTED_FILTER",
-         "message": "Whether a company is product-based vs service-based is not "
-                     "tracked -- only a company's overall tier (Low/Medium/High) "
-                     "and which specific company someone worked at are available."},
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "company_type", "operator": "in", "value": ["Product", "Both"]}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Not a services company, please.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "company_type", "operator": "not_in", "value": ["Service"]}]},
+    ),
+    (
+        # Confirmed live: earlier, "product-based" correctly gave
+        # UNSUPPORTED_FILTER alone but degraded into fabricating
+        # "company_tier" under compound load (3+ concepts in one sentence).
+        # Now that company_type is a real field, this compound case is just
+        # a normal multi-filter FILTER_CANDIDATES -- no special handling
+        # needed, which is exactly the point: a concept that's actually
+        # supported should behave the same whether it's alone or combined.
+        "CURRENT FILTERS: []\nNEW QUERY: Software developer in Mumbai with product based company experience.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "Software Developer"},
+                     {"field": "location", "operator": "equals", "value": "Mumbai"},
+                     {"field": "company_type", "operator": "in", "value": ["Product", "Both"]}]},
+    ),
+    (
+        # A DIFFERENT concept that's still genuinely unsupported (company
+        # size), combined with real criteria -- this is what the "message
+        # alongside FILTER_CANDIDATES" pattern is actually for: apply the
+        # real filters, say honestly what couldn't be applied, never
+        # fabricate a field for the unsupported part and never drop the
+        # whole query to UNSUPPORTED_FILTER just because one clause isn't
+        # trackable.
+        "CURRENT FILTERS: []\nNEW QUERY: Software developer in Mumbai at a large company.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "Software Developer"},
+                     {"field": "location", "operator": "equals", "value": "Mumbai"}],
+         "message": "Company size isn't tracked, so that part couldn't be "
+                     "applied -- showing results for job title and location only."},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Not from a low tier company.",
@@ -287,7 +364,8 @@ FEW_SHOTS = [
         "CURRENT FILTERS: []\nNEW QUERY: Exclude anyone with a big employment gap.",
         {"intent": "CLARIFY",
          "question": "What's the maximum gap length I should allow?",
-         "options": ["3 months", "6 months", "12 months"]},
+         "options": ["3 months", "6 months", "12 months"],
+         "clarify_field": "employment_gap_months", "clarify_operator": "lte"},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates with a GPA above 3.5.",
@@ -402,6 +480,22 @@ RULES:
    recruiters) -- silently picking one is exactly the guessing this rule
    forbids. If NEW QUERY has no explicit number for a numeric field, you may
    NOT invent one; only CLARIFY.
+6-clarify-field. Whenever the CLARIFY is about a threshold on ONE real
+   ALLOWED_FIELDS field (true for "experienced" -> "experience", "reasonable
+   notice period" -> "notice_period", "big employment gap" ->
+   "employment_gap_months", "X years of <skill>" with the years missing ->
+   "skill_experience" + "clarify_skill"), you MUST also include
+   "clarify_field" (the field name) and "clarify_operator" ("gte" for "at
+   least"/minimum-style questions, "lte" for "at most"/maximum-style
+   questions) in your output. This lets the backend turn the recruiter's next
+   short reply ("2+ years", or clicking that exact option) directly into the
+   real filter, deterministically -- a bare reply like "2+ years" alone,
+   re-sent to you with no memory of this question, is NOT reliably
+   interpretable, so this metadata is required, not optional, whenever it
+   applies. Omit both ONLY when the clarification genuinely doesn't reduce to
+   one field (e.g. "near Mumbai" -- distance isn't an ALLOWED_FIELDS concept
+   at all, so there is nothing to resolve to) or "show me good candidates"
+   (multiple different fields could apply, not resolvable to just one).
 6a-i. NEVER add a filter for a concept the query didn't mention. Every filter
    you output must trace to a specific word/phrase actually in NEW QUERY.
    Two filters is not inherently more correct than one -- a query naming
@@ -426,6 +520,15 @@ RULES:
    ALLOWED_FIELDS concept (e.g. asking for their email/resume), use
    "UNSUPPORTED_FILTER" instead. If genuinely ambiguous whether it's a
    question about one person or a new filter for everyone, use "CLARIFY".
+6a-ii-b. "location" (a specific city, e.g. "Mumbai", "Austin") and
+   "country" (e.g. "India", "United States") are DIFFERENT fields -- a
+   country name never goes into "location" (candidate locations are stored
+   city-level; "location equals India" could never match anyone even with a
+   flawless parse) and a city never goes into "country". Use the data's own
+   exact country spelling, not a colloquial short form, since this is an
+   exact match: "US"/"USA"/"America" -> "United States", "UK"/"Britain" ->
+   "United Kingdom", "UAE" -> "United Arab Emirates". For any other
+   colloquial country name, use its standard full English name.
 6b. Three DIFFERENT fields cover education -- never substitute one for
    another just because a query mentions "college"/"school"/"education":
    - "education" = degree LEVEL ONLY (High School/Diploma/Bachelor/Master/
@@ -449,9 +552,19 @@ RULES:
    "contains". "company_tier" = ranking/prestige (Low/Medium/High) -- "top
    tier company", "worked at a good company", "FAANG-caliber" (no specific
    name given) -> field "company_tier", operator "gte", value "High".
-   Product-vs-service-based, industry, and company size are NOT tracked --
-   those must return "UNSUPPORTED_FILTER", never approximated via
-   "company_tier" (tier is about company caliber/ranking, not business model).
+   "company_type" = product-based vs. service-based ("product company
+   experience", "worked at a services/IT-consulting company", "not a
+   services company") -> field "company_type", value from ["Product",
+   "Service", "Both"]. "product-based" (positive ask) -> operator "in",
+   value ["Product", "Both"] (a company doing both still counts). "service-
+   based" -> operator "in", value ["Service", "Both"]. "NOT a services
+   company" (negative) -> operator "not_in", value ["Service"] (excludes
+   pure-service only; "Both" still has product work, so it stays included).
+   Industry and company size are still NOT tracked -- those (and anything
+   that isn't clearly product/service/both) stay "UNSUPPORTED_FILTER",
+   never approximated via "company_tier" (tier is about caliber/ranking, a
+   completely different axis from business model) NOR via "company_type"
+   for something that isn't actually a product-vs-service question.
 6d. Negation on a ranked field (education, college_tier, company_tier) --
    "not a low tier company", "not low tier", "no high schoolers" -- means
    "not_equals" that value, NOT "lte"/"gte" the SAME value (operator "lte"
@@ -508,11 +621,17 @@ RULES:
    doesn't actually cover -- an honest "I don't have that" is always better
    than a filter that quietly answers something else. In particular, "salary"/
    "compensation"/"CTC", work authorization/visa/citizenship, gender/age/other
-   demographic traits, and shift/work-hours preference are NEVER in ALLOWED
-   FIELDS -- do not force them into "experience" (they are not a count of
-   years) or any other field just because a filter of some kind was
-   requested. If nothing in ALLOWED FIELDS is a genuine match, the answer is
-   "UNSUPPORTED_FILTER", never the closest-sounding numeric field.
+   demographic traits, shift/work-hours preference, and proximity/distance
+   ("near <city>", "within N km of <city>") are NEVER in ALLOWED FIELDS -- do
+   not force them into "experience" (they are not a count of years), into
+   "location" (which only matches an exact city name, not a radius), or any
+   other field just because a filter of some kind was requested. Do NOT
+   return "CLARIFY" for these either (e.g. asking "what distance should I
+   consider?") -- there is no field to resolve the answer into no matter how
+   it's answered, so that would be a dead-end question, not a real
+   clarification. If nothing in ALLOWED FIELDS is a genuine match, the
+   answer is "UNSUPPORTED_FILTER", never the closest-sounding numeric field
+   and never a CLARIFY with no real destination.
 8. Otherwise return intent "FILTER_CANDIDATES".
 9. Output ONLY a single JSON object. No markdown, no commentary.
 

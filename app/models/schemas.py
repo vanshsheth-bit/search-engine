@@ -53,9 +53,22 @@ class LLMOutput(BaseModel):
     intent: str
     logic: Literal["AND", "OR", "NOT"] = "AND"
     filters: list[Filter] = Field(default_factory=list)
-    # CLARIFY
+    # CLARIFY -- a genuinely ambiguous query gets a follow-up question
+    # instead of a guess. clarify_field/clarify_operator (when the question
+    # is about a concrete threshold on one ALLOWED_FIELDS field, e.g.
+    # "experience") let the backend resolve the recruiter's next reply
+    # ("2+ years", or clicking that exact option) DETERMINISTICALLY -- by
+    # extracting the number, not by re-sending the bare reply to the LLM
+    # with no memory of what was asked, which doesn't reliably work (a
+    # fragment like "2+ years" alone often isn't enough for the model to
+    # know what field it answers, especially the poorer the model). Left
+    # None for clarifications that don't reduce to one field+threshold
+    # (e.g. "show me good candidates" -- which criterion isn't decided yet).
     question: Optional[str] = None
     options: list[str] = Field(default_factory=list)
+    clarify_field: Optional[str] = None
+    clarify_skill: Optional[str] = None
+    clarify_operator: Optional[str] = None
     # UNSUPPORTED_FILTER
     message: Optional[str] = None
     # LOOKUP -- a question about ONE specific already-shown candidate, not a
@@ -113,6 +126,16 @@ class FilterResponse(BaseModel):
 # Session state: active filters AND who was last shown, so a follow-up like
 # "which college did he go to" can be resolved to a real candidate record.
 # --------------------------------------------------------------------------- #
+class PendingClarify(BaseModel):
+    """What a CLARIFY question was actually about, so the next reply
+    ("2+ years", or clicking that exact option) can be turned into a real
+    filter deterministically -- extracting the number, never re-sending the
+    bare reply to the LLM with no memory of the question."""
+    field: str
+    operator: str
+    skill: Optional[str] = None
+
+
 class SessionState(BaseModel):
     spec: FilterSpec = Field(default_factory=FilterSpec)
     last_candidates: list[dict] = Field(default_factory=list)
@@ -123,3 +146,6 @@ class SessionState(BaseModel):
     # the LLM has no way to recover "which field were we even asking about"
     # from a bare name alone.
     pending_lookup_field: Optional[str] = None
+    # Same idea for CLARIFY: set whenever the LLM identified which field a
+    # clarifying question was about (see LLMOutput.clarify_field).
+    pending_clarify: Optional[PendingClarify] = None

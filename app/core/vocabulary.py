@@ -10,7 +10,8 @@ import re
 # Fields a recruiter may filter on. Map each to the expected value type so
 # the validator can reject type mismatches deterministically.
 FIELD_TYPES: dict[str, str] = {
-    "location": "string",
+    "location": "string",             # a specific city
+    "country": "string",              # country-level, from real gazetteer data (not city-level)
     "experience": "number",          # total years of experience
     "skill": "string",               # a single skill name (contains check)
     "skill_experience": "number",    # years for a *specific* skill
@@ -24,6 +25,7 @@ FIELD_TYPES: dict[str, str] = {
     "job_title": "string",           # position/role title(s) held
     "certification": "string",       # certification name(s), free-text (contains check)
     "employment_gap_months": "number",  # longest single employment gap, in months
+    "company_type": "string",        # Product / Service / Both, from cached LLM classification
 }
 
 ALLOWED_FIELDS: list[str] = list(FIELD_TYPES.keys())
@@ -32,6 +34,7 @@ ALLOWED_FIELDS: list[str] = list(FIELD_TYPES.keys())
 # raw field keys like "skill_experience".
 FIELD_LABELS: dict[str, str] = {
     "location": "location",
+    "country": "country",
     "experience": "years of experience",
     "skill": "skill",
     "skill_experience": "years of experience with a specific skill",
@@ -45,6 +48,7 @@ FIELD_LABELS: dict[str, str] = {
     "job_title": "job title/role held",
     "certification": "certification",
     "employment_gap_months": "longest employment gap (months)",
+    "company_type": "company type (product/service)",
 }
 
 # Fields that MUST carry a `skill` key (which skill the number refers to).

@@ -5,6 +5,7 @@ query -> LLM translate -> merge with session -> validate -> engine -> response
 from __future__ import annotations
 
 import logging
+import re
 
 from app.core.candidates import get_available_fields, get_matched_candidates
 from app.core.engine import apply_spec
@@ -20,10 +21,32 @@ from app.models.schemas import (
     FilterSpec,
     LLMOutput,
     PatchStateRequest,
+    PendingClarify,
     SessionState,
 )
 
 logger = logging.getLogger(__name__)
+
+_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def _extract_number(text: str) -> float | int | None:
+    m = _NUMBER_RE.search(text)
+    if not m:
+        return None
+    n = float(m.group(1))
+    return int(n) if n.is_integer() else n
+
+
+def _extract_unit(text: str) -> str | None:
+    low = text.lower()
+    if "month" in low:
+        return "months"
+    if "day" in low:
+        return "days"
+    if "year" in low:
+        return "years"
+    return None
 
 
 class FilterService:
@@ -68,11 +91,44 @@ class FilterService:
             # Didn't match one of the offered names -- treat as abandoning
             # the pending lookup and fall through to a fresh query below.
 
+        # Same idea for a pending CLARIFY ("what minimum years of
+        # experience?"): a short reply ("2+ years", or clicking that exact
+        # option) has no reliable interpretation once sent to the LLM with
+        # no memory of the question -- a bare fragment like "2+ years" isn't
+        # enough context for the model to know what field it answers. Extract
+        # the number deterministically instead. Only for SHORT replies --
+        # a longer reply might be a genuinely new compound query (e.g. "at
+        # least 5 years, also based in Delhi"), which this simple extraction
+        # would wrongly reduce to just the number and silently drop the
+        # rest of -- let that fall through to the LLM instead.
+        if current.pending_clarify and len(query.split()) <= 6:
+            value = _extract_number(query)
+            if value is not None:
+                pc = current.pending_clarify
+                filt = Filter(field=pc.field, operator=pc.operator, value=value, skill=pc.skill)
+                if pc.field == "notice_period":
+                    filt.unit = _extract_unit(query) or "days"
+                merged = merge_filters(spec.filters, [filt])
+                return self._validate_apply_persist(merged, spec.logic, job_id, session_id)
+            # No number in the reply -- treat as abandoning the pending
+            # clarification and fall through to a fresh query below.
+
         llm_out: LLMOutput = self.llm.translate(
             query, [f.model_dump(exclude_none=True) for f in spec.filters]
         )
 
         if llm_out.intent == "CLARIFY":
+            pending = None
+            if llm_out.clarify_field:
+                pending = PendingClarify(
+                    field=llm_out.clarify_field,
+                    operator=llm_out.clarify_operator or "gte",
+                    skill=llm_out.clarify_skill,
+                )
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                pending_clarify=pending,
+            ))
             return FilterResponse(
                 status="clarify",
                 question=llm_out.question or "Could you clarify your filter?",
@@ -101,7 +157,8 @@ class FilterService:
         expanded_filters = expand_skill_filters(llm_out.filters)
         merged = merge_filters(spec.filters, expanded_filters)
         return self._validate_apply_persist(
-            merged, llm_out.logic, job_id, session_id
+            merged, llm_out.logic, job_id, session_id,
+            extra_message=llm_out.message,
         )
 
     # ------------------------------------------------------------------ #
@@ -180,7 +237,8 @@ class FilterService:
     # Shared tail: validate -> apply -> persist -> respond
     # ------------------------------------------------------------------ #
     def _validate_apply_persist(
-        self, filters: list[Filter], logic: str, job_id: str, session_id: str
+        self, filters: list[Filter], logic: str, job_id: str, session_id: str,
+        extra_message: str | None = None,
     ) -> FilterResponse:
         available = get_available_fields(job_id)
         result = validate_filters(filters, available)
@@ -215,6 +273,12 @@ class FilterService:
             "Couldn't apply: " + "; ".join(result.skipped) + "."
             if result.skipped else None
         )
+        # extra_message: the LLM's own note about a concept it recognized as
+        # unsupported but has no ALLOWED_FIELDS equivalent to even express as
+        # a droppable Filter (e.g. "product-based vs service-based") -- see
+        # prompt.py's compound-query rule. Merged with skip_note so both
+        # sources of "here's what couldn't be applied" reach the recruiter.
+        skip_note = " ".join(m for m in (extra_message, skip_note) if m) or None
 
         if not filtered:
             return FilterResponse(
