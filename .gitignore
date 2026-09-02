@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .env
+*.log
 
 # Real candidate/company data -- contains real PII (names, emails, phone
 # numbers), or is external reference data too large/not-ours to publish.
