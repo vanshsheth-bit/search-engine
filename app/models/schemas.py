@@ -53,6 +53,16 @@ class LLMOutput(BaseModel):
     intent: str
     logic: Literal["AND", "OR", "NOT"] = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    # Set true ONLY when NEW QUERY reads as a full standalone search that
+    # doesn't build on CURRENT FILTERS at all (e.g. CURRENT FILTERS has
+    # location+experience+skill and NEW QUERY is just "candidates in
+    # mumbai", mentioning none of the others) -- tells the backend to
+    # REPLACE the whole filter set with `filters` instead of merging field-
+    # by-field. False (default) for anything that reads as refining/adding
+    # to what's already active ("also add Python", "actually, Bangalore
+    # instead", "and 5+ years too") -- those still merge normally. See
+    # prompt.py rule 1b.
+    replace_all: bool = False
     # CLARIFY -- a genuinely ambiguous query gets a follow-up question
     # instead of a guess. clarify_field/clarify_operator (when the question
     # is about a concrete threshold on one ALLOWED_FIELDS field, e.g.

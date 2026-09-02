@@ -592,17 +592,48 @@ def _load_company_evidence() -> dict[str, list[str]]:
     }
 
 
+def _identity_key(process_id: str, raw_by_pid: dict) -> tuple:
+    """A best-effort real-person identity, independent of processId --
+    confirmed a real, live data issue this exists to fix: the SAME resume
+    (same email, same phone, same experience, uploaded minutes apart) got
+    parsed multiple times, producing multiple DISTINCT processIds for one
+    actual person, several of which then independently matched the same
+    job -- surfacing as duplicate candidate cards for one real human.
+    Email is the most reliable natural key here; name+phone is a fallback
+    for records missing one. Deliberately does NOT fall back to name alone
+    -- two different real people can share a name, and merging those would
+    be a much worse bug (silently losing a real, distinct candidate) than
+    the duplicate-card problem this fixes."""
+    raw = raw_by_pid.get(process_id) or {}
+    personal = raw.get("personalInfo") or {}
+    email = (personal.get("email") or "").strip().lower()
+    if email:
+        return ("email", email)
+    phone = (personal.get("phone") or "").strip()
+    name = (personal.get("name") or "").strip().lower()
+    if name and phone:
+        return ("name_phone", name, phone)
+    return ("pid", process_id)
+
+
 @lru_cache(maxsize=1)
 def _load_matches_by_job() -> dict[str, list[dict]]:
     """Join match results onto resume content, grouped by job. Only
     `completed` matches are included -- a failed match has no real score, so
-    surfacing one would be worse than omitting the candidate for that job."""
+    surfacing one would be worse than omitting the candidate for that job.
+
+    Deduped per job by real-person identity (see _identity_key), keeping
+    the highest-scoring of any duplicate uploads -- without this, a
+    candidate whose resume was accidentally uploaded/parsed twice (a real,
+    confirmed case in this dataset) shows up as two separate cards for the
+    same person in the same search."""
     resumes = _load_resumes_by_process_id()
+    raw_by_pid = {r["processId"]: r for r in _load_raw_resumes() if r.get("processId")}
 
     with open(_JD_MATCH_RESULTS_PATH, "r", encoding="utf-8") as fh:
         raw_matches = json.load(fh)
 
-    by_job: dict[str, list[dict]] = {}
+    by_job: dict[str, dict[tuple, dict]] = {}
     for m in raw_matches:
         if m.get("status") != "completed":
             continue
@@ -613,14 +644,19 @@ def _load_matches_by_job() -> dict[str, list[dict]]:
 
         candidate = dict(resume)
         candidate["match_score"] = m.get("rankingScore", 0)
+        identity = _identity_key(process_id, raw_by_pid)
 
         jd_id = (m.get("jdId") or {}).get("$oid")
         job_id = m.get("jobId")
         for key in (jd_id, job_id):
-            if key:
-                by_job.setdefault(key, []).append(candidate)
+            if not key:
+                continue
+            bucket = by_job.setdefault(key, {})
+            existing = bucket.get(identity)
+            if existing is None or candidate["match_score"] > existing["match_score"]:
+                bucket[identity] = candidate
 
-    return by_job
+    return {job_key: list(cands.values()) for job_key, cands in by_job.items()}
 
 
 def get_matched_candidates(job_id: str) -> list[dict]:

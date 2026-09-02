@@ -16,6 +16,7 @@ def build_filter_json_schema() -> dict:
         "properties": {
             "intent": {"type": "string", "enum": sorted(VALID_INTENTS)},
             "logic": {"type": "string", "enum": ["AND", "OR", "NOT"]},
+            "replace_all": {"type": "boolean"},
             "filters": {
                 "type": "array",
                 "items": {
@@ -48,5 +49,5 @@ def build_filter_json_schema() -> dict:
             "candidate_ref": {"type": "string"},
             "lookup_field": {"type": "string", "enum": ALLOWED_FIELDS},
         },
-        "required": ["intent"],
+        "required": ["intent", "replace_all"],
     }

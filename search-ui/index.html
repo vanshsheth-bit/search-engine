@@ -174,6 +174,8 @@
     padding: 2px 7px;
   }
   .card-line { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .card.partial { opacity: 0.88; border-style: dashed; }
+  .partial-badge { color: var(--warn); font-weight: 500; }
   .skills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   .skill-tag {
     font-size: 10.5px;
@@ -241,10 +243,18 @@
 
   // In the real product this comes from whichever job's page the recruiter
   // is already on -- never typed or picked here. Fixed for this test
-  // harness since there's no job-picker page yet. (Real jdId, 17 candidates,
-  // mix of Mumbai/US locations and Python/Docker/Kubernetes skills, so both
-  // location and skill queries have something real to find.)
-  const JOB_ID = "SYN-BACKEND-01";
+  // harness since there's no job-picker page yet. Real jobId against the
+  // real production dataset (124 matched candidates, 25 of them real
+  // Mumbai locations -- matches this page's own placeholder/example text).
+  // No single real job in this dataset has BOTH strong location diversity
+  // AND ML-skill diversity (checked: 00000103 has PyTorch/TensorFlow/
+  // scikit-learn/XGBoost candidates but almost no India-based ones, this
+  // job has real Mumbai candidates but no ML-specific skills) -- use
+  // "00000103" instead when specifically testing fuzzy/partial skill
+  // matching. NOTE: only valid while the server points at the real data
+  // files (PARSED_RESUMES_PATH etc. unset / at repo-root defaults) --
+  // switch to "SYN-BACKEND-01" if running against test_data/synthetic_*.json.
+  const JOB_ID = "00000096";
 
   function getSessionId() {
     let id = localStorage.getItem("cf_session_id");
@@ -312,8 +322,14 @@
     const skills = skillList(c.skills).slice(0, 8);
     const universities = skillList(c.university);
     const companies = skillList(c.company);
+    const pm = c.partial_skill_match;
+    const partialBadge = pm
+      ? `<div class="card-line partial-badge">⚠ Matched ${pm.matched} of ${pm.total} skill requirements` +
+        (pm.missing && pm.missing.length ? ` — missing: ${pm.missing.map(escapeHtml).join(", ")}` : "") +
+        `</div>`
+      : "";
     return `
-      <div class="card">
+      <div class="card${pm ? " partial" : ""}">
         <div class="card-top">
           <span class="card-name">${escapeHtml(c.name || c.id || "Unnamed")}</span>
           ${c.match_score !== undefined ? `<span class="score">${escapeHtml(String(c.match_score))}</span>` : ""}
@@ -327,6 +343,7 @@
         ${universities.length ? `<div class="card-line">🏫 ${universities.map(escapeHtml).join(", ")}${c.college_tier ? ` (${escapeHtml(c.college_tier)} tier)` : ""}</div>` : ""}
         ${companies.length ? `<div class="card-line">🏢 ${companies.slice(0, 5).map(escapeHtml).join(", ")}${c.company_tier ? ` (${escapeHtml(c.company_tier)} tier)` : ""}</div>` : ""}
         ${skills.length ? `<div class="skills">${skills.map(s => `<span class="skill-tag">${escapeHtml(s)}</span>`).join("")}</div>` : ""}
+        ${partialBadge}
       </div>
     `;
   }

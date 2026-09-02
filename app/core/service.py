@@ -8,13 +8,17 @@ import logging
 import re
 
 from app.core.candidates import get_available_fields, get_matched_candidates
-from app.core.engine import apply_spec
+from app.core.engine import apply_spec, matches_filter
 from app.core.lookup import answer_lookup, resolve_candidate
 from app.core.merge import merge_filters, to_chips
 from app.core.session import SessionStore, default_store
-from app.core.skill_taxonomy import expand_skill_filters
+from app.core.skill_taxonomy import (
+    canonicalize, expand_skill_filters, related_terms_for, skill_names_of,
+)
+from app.core.semantic import MIN_SIMILARITY, term_similarities
 from app.core.validation import validate_filters
 from app.llm.client import LLMClient
+from app.llm.skill_verify import verify_skill_candidates
 from app.models.schemas import (
     ChatTurn,
     Filter,
@@ -240,7 +244,10 @@ class FilterService:
         # session state, so what gets stored/matched is already the precise
         # expansion, not the bare concept term.
         expanded_filters = expand_skill_filters(llm_out.filters)
-        merged = merge_filters(spec.filters, expanded_filters)
+        merged = (
+            expanded_filters if llm_out.replace_all
+            else merge_filters(spec.filters, expanded_filters)
+        )
         return self._validate_apply_persist(
             merged, llm_out.logic, job_id, session_id, query, current.history,
             extra_message=llm_out.message,
@@ -365,6 +372,29 @@ class FilterService:
         candidates = get_matched_candidates(job_id)
         filtered = apply_spec(candidates, spec)
 
+        # Widen skill filters to also count a candidate who has the same
+        # thing in different words -- a curated related tool (merged_tools.json)
+        # or, failing that, an LLM-verified semantically-equivalent skill list
+        # (see _fuzzy_skill_matches). Full matches merge directly, same
+        # ranking, no special labeling. A candidate who satisfies only SOME
+        # of several AND'd skill requirements is never silently dropped --
+        # they're appended below the full matches, tagged with exactly what
+        # they matched and what they didn't (partial_skill_match), so the
+        # recruiter sees and judges them instead of the system hiding a
+        # possibly-relevant person.
+        full_extra, partial = self._fuzzy_skill_matches(
+            job_id, spec, matched_ids={c.get("id") for c in filtered},
+        )
+        if full_extra:
+            filtered = sorted(
+                filtered + full_extra, key=lambda c: c.get("match_score", 0), reverse=True,
+            )
+        if partial:
+            partial.sort(key=lambda c: (
+                -c["partial_skill_match"]["matched"], -c.get("match_score", 0),
+            ))
+            filtered = filtered + partial
+
         # Persist the new valid state, including who's now in view -- this
         # is what a later LOOKUP ("which college did he go to") resolves
         # against.
@@ -417,6 +447,117 @@ class FilterService:
             candidates=filtered,
             message=skip_note,
         )
+
+    # ------------------------------------------------------------------ #
+    # Widen skill filters so a candidate counts as a match via a curated
+    # related tool or an LLM-verified semantically-equivalent skill list,
+    # not just the exact word -- merged directly into the real result.
+    #
+    # Under AND logic with 2+ skill filters, a candidate who satisfies SOME
+    # but not all of them is still surfaced (never silently dropped) as a
+    # PARTIAL match -- ranked below full matches, tagged with exactly which
+    # requirements they met and which they didn't, so the recruiter decides
+    # rather than the system hiding a possibly-relevant person. Every other
+    # filter (non-skill fields, and the skill filters under OR/NOT logic)
+    # stays a strict, unlabeled hard requirement -- only skill-under-AND
+    # gets partial credit, since that's the specific "same meaning,
+    # different words" gap this feature addresses.
+    # ------------------------------------------------------------------ #
+    _SEMANTIC_SHORTLIST_SIZE = 8
+
+    def _fuzzy_skill_matches(
+        self, job_id: str, spec: FilterSpec, matched_ids: set,
+    ) -> tuple[list[dict], list[dict]]:
+        """Returns (full_extra, partial) -- full_extra: candidates who now
+        satisfy the ENTIRE spec (merge directly, no distinction from an
+        exact match). partial: candidates who satisfy every non-skill
+        filter plus SOME (not all) skill filters under AND logic -- each
+        dict carries a `partial_skill_match` key: {"matched": int, "total":
+        int, "missing": [label, ...]} for card-level display."""
+        skill_idx = [
+            i for i, f in enumerate(spec.filters)
+            if f.field == "skill" and f.operator in {"contains", "not_contains"}
+        ]
+        if not skill_idx:
+            return [], []
+
+        candidates = get_matched_candidates(job_id)
+        pool = [c for c in candidates if c.get("id") not in matched_ids]
+        if not pool:
+            return [], []
+
+        # Per skill filter: the set of candidate ids (from `pool`) that
+        # qualify via EITHER a curated taxonomy relation OR an LLM-verified
+        # semantically-equivalent skill list -- raw embedding similarity
+        # alone is deliberately never trusted on its own here (see
+        # skill_verify.py's docstring: confirmed a cybersecurity candidate
+        # scored within 0.006 of a genuine ML match on pure similarity).
+        qualifying_by_filter: dict[int, set] = {}
+        for i in skill_idx:
+            canon = canonicalize(str(spec.filters[i].value))
+            exact, related = related_terms_for(canon)
+
+            qualifies = set()
+            for c in pool:
+                cand_skills = {s.lower() for s in skill_names_of(c)}
+                if cand_skills & exact or cand_skills & related:
+                    qualifies.add(c.get("id"))
+
+            try:
+                sims = term_similarities(job_id, canon)
+            except Exception:
+                logger.warning("term_similarities failed for %r", canon, exc_info=True)
+                sims = {}
+            remaining = [c for c in pool if c.get("id") not in qualifies]
+            shortlist_candidates = sorted(
+                (c for c in remaining if sims.get(c.get("id"), 0.0) >= MIN_SIMILARITY),
+                key=lambda c: -sims.get(c.get("id"), 0.0),
+            )[: self._SEMANTIC_SHORTLIST_SIZE]
+            if shortlist_candidates:
+                shortlist = [(c.get("id"), skill_names_of(c)) for c in shortlist_candidates]
+                try:
+                    qualifies |= verify_skill_candidates(canon, shortlist)
+                except Exception:
+                    logger.warning("verify_skill_candidates failed for %r", canon, exc_info=True)
+
+            qualifying_by_filter[i] = qualifies
+
+        skill_labels = {i: canonicalize(str(spec.filters[i].value)) for i in skill_idx}
+
+        full_extra, partial = [], []
+        for c in pool:
+            cid = c.get("id")
+            non_skill_ok = True
+            skill_hits, skill_misses = [], []
+            for i, f in enumerate(spec.filters):
+                if i in qualifying_by_filter:
+                    hit = cid in qualifying_by_filter[i]
+                    if f.operator == "not_contains":
+                        hit = not hit
+                    (skill_hits if hit else skill_misses).append(skill_labels[i])
+                else:
+                    non_skill_ok = non_skill_ok and matches_filter(c, f)
+
+            if spec.logic == "OR":
+                if non_skill_ok or skill_hits:
+                    full_extra.append(c)
+            elif spec.logic == "NOT":
+                if not non_skill_ok and not skill_hits:
+                    full_extra.append(c)
+            else:  # AND
+                if not non_skill_ok:
+                    continue
+                if not skill_misses:
+                    full_extra.append(c)
+                elif skill_hits:
+                    enriched = dict(c)
+                    enriched["partial_skill_match"] = {
+                        "matched": len(skill_hits),
+                        "total": len(skill_hits) + len(skill_misses),
+                        "missing": skill_misses,
+                    }
+                    partial.append(enriched)
+        return full_extra, partial
 
 
 def _no_match_suggestions(filters: list[Filter]) -> list[str]:

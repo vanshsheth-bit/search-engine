@@ -120,6 +120,29 @@ def education_rank(text: str | None) -> int | None:
     return None
 
 
+def bare_degree_rank(text: str | None) -> int | None:
+    """Rank ONLY if `text`, once stripped of filler words ("degree",
+    "level", "holder"), IS ENTIRELY a degree-level keyword phrase (e.g.
+    "PhD", "bachelor's degree") -- not just contains one as a substring of
+    some longer, unrelated real value. Deliberately stricter than
+    education_rank (which scans for a keyword anywhere in longer resume
+    text, e.g. a job description) -- this is for self-healing a filter
+    value the LLM put in the WRONG field (see validation.py): confirmed
+    live, "PhD" and "bachelor degree" both got routed into `job_title`
+    instead of `education`. Auto-correcting that is only safe because the
+    value is nothing BUT the degree word -- "PhD Research Manager" is a
+    real, different job title that happens to mention a degree, and must
+    NOT be reinterpreted as an education filter."""
+    if not text or not isinstance(text, str):
+        return None
+    norm = _normalize_degree_text(text.strip())
+    norm = re.sub(r"\s*(degrees?|levels?|holders?)\s*$", "", norm).strip()
+    for rank, keywords in _DEGREE_KEYWORDS:
+        if norm in keywords:
+            return rank
+    return None
+
+
 # Shared Low/Medium/High tier scale, used by both college_tier (from
 # master_universities.csv) and company_tier (from company_ranks.json).
 # Ranked, not just labeled, so "top tier" can mean "gte High" the same way

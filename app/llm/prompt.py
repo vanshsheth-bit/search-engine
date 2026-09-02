@@ -142,6 +142,33 @@ FEW_SHOTS = [
          "filters": [{"field": "education", "operator": "equals", "value": "Bachelor"}]},
     ),
     (
+        # Confirmed live: "PhD candidates in Mumbai" got the operator wrong
+        # -- {"field":"education","operator":"contains","value":"PhD"} --
+        # even though the two examples right above this one (covering
+        # "with a master's degree" / "exactly a bachelor's") get "gte"/
+        # "equals" correct. The difference is sentence shape: "PhD
+        # candidates" uses the degree as a noun modifying "candidates"
+        # directly (like "senior candidates" or "remote candidates"), not
+        # the "candidates WITH a <degree>" shape the other examples use --
+        # same rule 5b threshold logic applies regardless of phrasing:
+        # naming a degree, in ANY sentence shape, with no "only"/"exactly"
+        # qualifier, still means "at least that level" -> "gte", never
+        # "contains" (education is ranked, not free text -- see the
+        # ordinal-field rule above).
+        "CURRENT FILTERS: []\nNEW QUERY: PhD candidates in Mumbai.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "education", "operator": "gte", "value": "PhD"},
+                     {"field": "location", "operator": "equals", "value": "Mumbai"}]},
+    ),
+    (
+        # Same failure mode, terser phrasing -- confirmed live this also
+        # produced the wrong "contains" operator. A bare degree noun with
+        # no surrounding sentence at all is still rule 5b, not "contains".
+        "CURRENT FILTERS: []\nNEW QUERY: bachelor degree",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "education", "operator": "gte", "value": "Bachelor"}]},
+    ),
+    (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates available within 30 days.",
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "notice_period", "operator": "lte",
@@ -158,6 +185,35 @@ FEW_SHOTS = [
         "\"value\": \"Mumbai\"}]\nNEW QUERY: Actually, show Bangalore instead.",
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "location", "operator": "equals", "value": "Bangalore"}]},
+    ),
+    (
+        # Rule 1b: CURRENT FILTERS has THREE fields (location, experience,
+        # skill), but NEW QUERY only names location and doesn't build on the
+        # other two at all ("also", "still", etc.) -- reads as a fresh,
+        # standalone search, not a refinement. replace_all=true so the
+        # backend drops the stale experience/skill filters instead of
+        # silently keeping them underneath a query that never mentioned
+        # them. Confirmed live: without this, "candidates in mumbai" typed
+        # over stale Experience>=3/Python filters kept returning 0 matches
+        # even though plenty of real Mumbai candidates existed.
+        "CURRENT FILTERS: [{\"field\": \"location\", \"operator\": \"equals\", "
+        "\"value\": \"Mumbai\"}, {\"field\": \"experience\", \"operator\": \"gte\", "
+        "\"value\": 3}, {\"field\": \"skill\", \"operator\": \"contains\", "
+        "\"value\": \"Python\"}]\nNEW QUERY: candidates in mumbai",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND", "replace_all": True,
+         "filters": [{"field": "location", "operator": "equals", "value": "Mumbai"}]},
+    ),
+    (
+        # Contrast with the example directly above: same starting CURRENT
+        # FILTERS, but "also" explicitly builds on what's active -- a
+        # refinement, not a standalone search. replace_all stays false (the
+        # default) and the new skill filter merges in alongside the
+        # existing ones instead of replacing them.
+        "CURRENT FILTERS: [{\"field\": \"location\", \"operator\": \"equals\", "
+        "\"value\": \"Mumbai\"}, {\"field\": \"experience\", \"operator\": \"gte\", "
+        "\"value\": 3}]\nNEW QUERY: also add Java",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill", "operator": "contains", "value": "Java"}]},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Show experienced candidates.",
@@ -458,6 +514,29 @@ RULES:
 1. If the query updates a field already present in CURRENT FILTERS (e.g. a new
    location or a changed experience threshold), REPLACE that filter. Do not
    emit a conflicting duplicate.
+1b. CHECK THIS EXPLICITLY FOR EVERY QUERY WHEN CURRENT FILTERS IS NON-EMPTY:
+   count how many DIFFERENT FIELDS are in CURRENT FILTERS. If there are 2 or
+   more, go through them one by one and ask "does NEW QUERY reference or
+   build on THIS specific field, even implicitly?" (a connector like "also"/
+   "and"/"too"/"as well" counts; restating or changing that exact field's
+   value also counts). If ANY field in CURRENT FILTERS gets a "no" -- NEW
+   QUERY is silent about it entirely, not even implicitly -- then NEW QUERY
+   is a fresh, standalone search, NOT a refinement, REGARDLESS of whether it
+   happens to repeat or update one of the other fields (e.g. restating the
+   same city, or picking a new one, still counts as "silent" about the
+   fields it never mentions). In that case set "replace_all": true so the
+   backend REPLACES the whole filter set with `filters` instead of merging
+   field-by-field -- otherwise the unmentioned old filters (e.g. a stale
+   skill/experience requirement from an earlier turn) silently stay applied
+   underneath a query that said nothing about them, producing a wrong/empty
+   result the recruiter has no reason to expect. This applies even when the
+   query updates a field that's ALSO in CURRENT FILTERS (rule 1 still tells
+   you to replace THAT field's value) -- rule 1 and replace_all are
+   independent: rule 1 is about what value that one field gets, replace_all
+   is about whether the OTHER, unmentioned fields survive. Only set
+   "replace_all" false (the default) when EVERY field in CURRENT FILTERS
+   gets a "yes" -- the query genuinely touches, adds to, or explicitly
+   preserves each one.
 2. "X+ years of experience" with NO named skill/technology -> field
    "experience" (their overall career length), operator "gte"/"lte"/etc,
    numeric "value". Do NOT use "skill_experience" unless a specific

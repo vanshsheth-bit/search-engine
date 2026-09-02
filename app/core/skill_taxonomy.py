@@ -38,9 +38,35 @@ _MERGED_TOOLS_PATH = os.getenv(
 # stand in for the concept itself (e.g. a 0.5-weight tangential tool).
 DEFAULT_MIN_WEIGHT = 0.8
 
+# Stricter than DEFAULT_MIN_WEIGHT: this threshold gates silently widening a
+# SPECIFIC single-tool ask ("knows PyTorch") rather than an explicit umbrella
+# concept the recruiter themselves named ("machine learning"). Widening a
+# concrete ask is a bigger inferential leap -- e.g. Python's related tools
+# include Django and SQL, which must NEVER stand in for "knows Python" -- so
+# it only kicks in for genuinely close siblings (PyTorch/TensorFlow at 0.94,
+# scikit-learn/XGBoost at 0.89), never a loosely-associated tool. Every
+# candidate that only matches via this widening is labeled "related, not
+# exact" (see annotate_related_skill_matches), so nothing is ever silently
+# blended in -- the recruiter always sees which is which.
+RELATED_TOOL_MIN_WEIGHT = 0.85
+
 
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s.lower().strip())
+    # Strip spaces AND hyphens, not just collapse whitespace -- confirmed a
+    # real miss otherwise: a resume's own skill-extraction pipeline stored
+    # "scikit-learn" as "scikitlearn" (hyphen dropped entirely, not even
+    # replaced with a space), which matched NEITHER this taxonomy's
+    # "scikit-learn" canonical name NOR its "scikit learn" alias under plain
+    # whitespace normalization -- zero recognition at all for a candidate
+    # who had the EXACT literal tool. Checked this is safe taxonomy-wide:
+    # it adds 59 new alias collisions on top of the ~1,346 that already
+    # exist under the old normalization (a separate, pre-existing data-
+    # quality issue in merged_tools.json -- e.g. "Fluentbit" and "Fluent
+    # Bit" are already two distinct canonical entries for the same tool).
+    # Inspected the 59: overwhelmingly the same kind of pre-existing near-
+    # duplicate entries this merge is naturally exposing, not genuinely
+    # different tools being wrongly conflated.
+    return re.sub(r"[\s\-]+", "", s.lower().strip())
 
 
 @lru_cache(maxsize=1)
@@ -197,3 +223,65 @@ def expand_skill_filters(filters: list[Filter]) -> list[Filter]:
         merged = _dedupe(head + tail)
         out.append(f.model_copy(update={"value": merged}))
     return out
+
+
+def _raw_skill_names(candidate: dict) -> list[str]:
+    """Candidate `skills` may be a flat list or a {name: {...}} dict (same
+    flexible shape engine.py's _skills_map handles) -- return real names,
+    original casing, regardless of which."""
+    skills = candidate.get("skills")
+    if isinstance(skills, dict):
+        return list(skills.keys())
+    if isinstance(skills, (list, tuple)):
+        return [str(s) for s in skills]
+    return []
+
+
+# Ubiquitous supporting libraries the taxonomy weights highly (e.g. NumPy is
+# 0.87-0.95 "related" to nearly every Python data/ML tool) but which are a
+# USELESS signal on their own for "did this person do the specific thing
+# asked about" -- confirmed against real data: almost every candidate with
+# ANY scikit-learn/pandas-adjacent skill has NumPy, which would otherwise
+# turn "knows scikit-learn" into "knows any Python data tool at all". Never
+# counted as a qualifying related tool by itself.
+_GENERIC_SUPPORT_LIBS = {
+    "numpy", "pandas", "scipy", "matplotlib", "seaborn", "requests", "git",
+    "jupyter", "jupyternotebook",
+}
+
+
+def skill_names_of(candidate: dict) -> list[str]:
+    """Public wrapper on _raw_skill_names -- a candidate's real skill names,
+    original casing, regardless of whether `skills` is stored as a flat list
+    or a {name: {...}} dict."""
+    return _raw_skill_names(candidate)
+
+
+def related_terms_for(
+    term: str, min_weight: float = RELATED_TOOL_MIN_WEIGHT,
+) -> tuple[set[str], set[str]]:
+    """For a specific tool name, returns (exact_terms_lower, related_terms_lower):
+    - exact_terms: the tool's own canonical name + real aliases -- always the
+      same thing, safe to treat identically.
+    - related_terms: other tools genuinely close enough (>= min_weight, and
+      not a generic supporting library -- see _GENERIC_SUPPORT_LIBS) to
+      reasonably stand in for it, e.g. "PyTorch" -> also TensorFlow, Keras,
+      Hugging Face.
+
+    Used to widen a specific-tool skill filter so a candidate who has a
+    close sibling tool counts as a match too -- confirmed necessary against
+    real data (a job's matched pool had candidates with TensorFlow/XGBoost
+    but literally nobody with the exact words "scikit-learn"/"pytorch").
+    Callers decide how to combine this with the candidate's real data (see
+    service.py's fuzzy-matching pass) -- this function only looks up the
+    taxonomy relationship, it never itself decides who counts as a match.
+    """
+    canon = canonicalize(term)
+    _, canonical_to_related, canonical_to_aliases = _load_taxonomy()
+    exact = {canon.lower()} | {a.lower() for a in canonical_to_aliases.get(canon, [])}
+    related = {
+        rtool.lower() for rtool, w in canonical_to_related.get(canon, [])
+        if w >= min_weight and rtool.lower() not in exact
+        and _norm(rtool) not in _GENERIC_SUPPORT_LIBS
+    }
+    return exact, related

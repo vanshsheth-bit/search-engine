@@ -13,12 +13,14 @@ from dataclasses import dataclass, field as dc_field
 
 from app.core.vocabulary import (
     ALLOWED_OPERATORS,
+    EDUCATION_RANK_LABELS,
     FIELD_LABELS,
     FIELD_TYPES,
     GENERIC_FILLER_WORDS,
     NAME_FIELDS,
     OPERATORS_BY_TYPE,
     SKILL_SCOPED_FIELDS,
+    bare_degree_rank,
 )
 from app.models.schemas import Filter
 
@@ -64,6 +66,23 @@ def _type_ok(value, expected_type: str) -> bool:
     return isinstance(value, str)
 
 
+# Deterministic self-healing for a confirmed, reproducible LLM routing
+# mistake: "contains"/"not_contains" on an ordinal field (education,
+# college_tier, company_tier) -- e.g. "PhD candidates in Mumbai" or "bachelor
+# degree" parsed as {"field":"education","operator":"contains","value":"PhD"}
+# instead of "gte". Confirmed this is NOT occasional model flakiness --
+# reproduced 100% of the time even with a freshly cold model cache and a
+# directly-matching worked few-shot example already in the prompt (see
+# prompt.py's PhD/bachelor examples right after rule 5b) -- so prompt
+# engineering alone doesn't reliably fix it here, and it's corrected
+# deterministically instead. Safe to auto-remap rather than just drop the
+# filter: rule 5b's own logic already establishes that a bare degree/tier
+# mention with no "only"/"exactly" qualifier means "at least" that level --
+# what "contains" degrades to here isn't a guess about the recruiter's
+# intent, it's a syntax-level fix for a known, mechanical mistake.
+_ORDINAL_CONTAINS_FIX = {"contains": "gte", "not_contains": "not_equals"}
+
+
 def validate_filters(
     filters: list[Filter],
     available_fields: set[str] | None = None,
@@ -85,6 +104,21 @@ def validate_filters(
     any_unsupported = False
 
     for f in filters:
+        # Deterministic self-healing for a second confirmed, reproducible
+        # LLM routing mistake: a BARE degree word/phrase ("PhD", "bachelor
+        # degree") routed into job_title instead of education -- same
+        # class of mechanical mistake as the ordinal-operator fix below,
+        # confirmed live. Only fires when the value is nothing BUT the
+        # degree word (see bare_degree_rank's docstring) -- a real title
+        # that happens to mention a degree ("PhD Research Manager") is
+        # left untouched.
+        if f.field == "job_title" and f.operator in {"contains", "equals"}:
+            rank = bare_degree_rank(f.value)
+            if rank is not None:
+                f.field = "education"
+                f.operator = "gte"
+                f.value = EDUCATION_RANK_LABELS[rank]
+
         label = FIELD_LABELS.get(f.field, f.field)
 
         if f.field not in FIELD_TYPES:
@@ -93,6 +127,9 @@ def validate_filters(
             continue
 
         expected_type = FIELD_TYPES[f.field]
+
+        if expected_type == "ordinal" and f.operator in _ORDINAL_CONTAINS_FIX:
+            f.operator = _ORDINAL_CONTAINS_FIX[f.operator]
 
         if f.operator not in ALLOWED_OPERATORS:
             skipped.append(f"I didn't understand the comparison for {label}")
