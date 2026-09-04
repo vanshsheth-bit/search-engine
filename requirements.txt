@@ -5,3 +5,9 @@ requests==2.32.3
 pytest==8.3.3
 httpx==0.27.2
 python-dotenv==1.2.3
+
+# Experience index: vector storage/maths (numpy) and the subdomain
+# classifier's TF-IDF fallback backend + cosine kernels (scipy, sklearn).
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.2

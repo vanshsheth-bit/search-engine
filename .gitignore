@@ -17,6 +17,13 @@ master_universities.csv
 Location.json
 university_abbs.json
 
+# Derived from the real resume data above, so it inherits the same PII:
+# per-experience text chunks + their embeddings, and the classifier labels
+# keyed to real candidate ids. Rebuild with
+# `python scripts/build_experience_index.py`.
+experience_index/
+.embed_cache/
+
 # A separate, pre-existing prototype app pulled in for reference/investigation
 # this session -- not code we wrote, and its .env files hold real API keys
 # (OpenAI, Groq, Gemini, MongoDB URIs). Never commit it.

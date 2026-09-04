@@ -163,6 +163,29 @@ class PendingClarify(BaseModel):
     unit: Optional[str] = None
 
 
+class PendingCombine(BaseModel):
+    """A proposed filter combination awaiting yes/no confirmation before
+    being applied. Set when a new query introduces at least one genuinely
+    NEW field on top of an already-active, non-empty filter set (e.g.
+    active filter is "Mumbai", new query asks for "high tier college" --
+    a different field entirely) -- as opposed to updating a field already
+    present ("actually, Bangalore instead"), which still auto-replaces
+    without asking, or a query that reads as a full standalone search
+    (see LLMOutput.replace_all), which still replaces the whole set
+    without asking. Only the "silently stack an unrelated new requirement
+    onto the existing search" case is ambiguous enough to warrant a
+    confirmation -- the recruiter might have meant EITHER "Mumbai AND
+    high tier college" OR "actually, forget Mumbai, just high tier
+    college" and guessing either way risks a wrong result the recruiter
+    has no reason to expect.
+
+    Holds the FULLY MERGED spec, ready to apply verbatim on "yes" -- no
+    LLM call needed to resolve the confirmation, same principle as
+    PendingClarify.value."""
+    spec: FilterSpec
+    message: Optional[str] = None
+
+
 class ChatTurn(BaseModel):
     """One turn of real conversation history, sent back to the LLM verbatim
     as prior chat messages (not summarized/hand-parsed) -- so a short reply
@@ -189,6 +212,10 @@ class SessionState(BaseModel):
     # Same idea for CLARIFY: set whenever the LLM identified which field a
     # clarifying question was about (see LLMOutput.clarify_field).
     pending_clarify: Optional[PendingClarify] = None
+    # Set when a query introduces a genuinely new field on top of an
+    # already-active search, awaiting yes/no confirmation before combining
+    # -- see PendingCombine's docstring.
+    pending_combine: Optional[PendingCombine] = None
     # Recent real conversation turns (bounded, see service._append_history),
     # replayed to the LLM as actual prior chat messages on every call.
     history: list[ChatTurn] = Field(default_factory=list)

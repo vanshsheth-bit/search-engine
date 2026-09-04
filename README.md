@@ -96,6 +96,58 @@ curl -X DELETE 'localhost:8000/ai/candidates/filter/state?job_id=123&session_id=
 python demo.py
 ```
 
+## Experience index (per-experience classification + embeddings)
+
+Every experience of every candidate is processed twice, into **two separate
+stores that never mix**:
+
+| store | file | content |
+|---|---|---|
+| structured metadata | `experience_index/classifications.jsonl` | subdomain-classifier output per experience (domain, subdomain, alternatives, domain scores, matched indicator terms, confidence signals) |
+| semantic vectors | `experience_index/chunks.jsonl` + `embeddings.f32` | embeddings of the candidate's **original** experience text only |
+
+They are joined by `experience_id`:
+
+```
+candidate_id   proc_808c4f72-...
+experience_id  proc_808c4f72-...#exp0
+chunk_id       proc_808c4f72-...#exp0#chunk0
+```
+
+**Chunk granularity is the experience** — a candidate with 3 experiences
+produces 3 chunks. A single experience only splits further if its text
+exceeds the embedding model's usable window (22 of 3,689 experiences here).
+
+**The classifier's output is never embedded.** `app/core/experience_text.py`
+is the only place that decides what text is embedded, and it reads original
+resume fields exclusively — no predicted domain, no derived tier/type
+metadata. If labels leaked into the vectors, semantic search would degrade
+into "find things the classifier already labelled the same way", making a
+classification error an unfixable retrieval error too.
+`tests/test_experience_index.py` enforces this.
+
+Build it (needs `ollama pull nomic-embed-text`):
+
+```bash
+python scripts/build_experience_index.py            # full build, resumable
+python scripts/build_experience_index.py --limit 20 # smoke test
+CLASSIFIER_EMBED_BACKEND=tfidf python scripts/build_experience_index.py  # no model server
+```
+
+Read it:
+
+```python
+from app.core import experience_index
+
+labels = experience_index.load_classifications()      # {experience_id: row}
+by_cand = experience_index.classifications_by_candidate()
+hits = experience_index.search("built distributed data pipelines", top_k=5)
+```
+
+`search()` ranks on the vectors alone and attaches each hit's classification
+afterwards — semantic recall and structured filtering stay independent
+signals, which is the point of storing them apart.
+
 ## Response shapes
 
 | status | meaning |

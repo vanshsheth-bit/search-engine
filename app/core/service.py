@@ -27,6 +27,7 @@ from app.models.schemas import (
     LLMOutput,
     PatchStateRequest,
     PendingClarify,
+    PendingCombine,
     SessionState,
 )
 
@@ -133,6 +134,33 @@ class FilterService:
                 )
             # Didn't match one of the offered names -- treat as abandoning
             # the pending lookup and fall through to a fresh query below.
+
+        # Same idea for a pending COMBINE confirmation ("Do you want
+        # candidates matching Mumbai and High tier college?"): a bare
+        # "yes"/"no" resolves deterministically, no LLM call, applying the
+        # exact pre-computed merged spec rather than re-deriving it (see
+        # PendingCombine's docstring for why this confirmation exists at
+        # all).
+        if current.pending_combine and len(query.split()) <= 6:
+            answer = _extract_yes_no(query)
+            if answer is True:
+                pc = current.pending_combine
+                return self._validate_apply_persist(
+                    pc.spec.filters, pc.spec.logic, job_id, session_id, query,
+                    current.history, extra_message=pc.message,
+                )
+            if answer is False:
+                question = "Okay -- what would you like instead?"
+                self.store.set(session_id, job_id, SessionState(
+                    spec=spec, last_candidates=current.last_candidates,
+                    history=_append_history(current.history, query, question),
+                ))
+                return FilterResponse(
+                    status="clarify", question=question,
+                    logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
+                )
+            # Not a recognizable yes/no -- treat as abandoning the pending
+            # combine and fall through to a fresh query below.
 
         # Same idea for a pending CLARIFY ("what minimum years of
         # experience?"): a short reply ("2+ years", or clicking that exact
@@ -244,12 +272,48 @@ class FilterService:
         # session state, so what gets stored/matched is already the precise
         # expansion, not the bare concept term.
         expanded_filters = expand_skill_filters(llm_out.filters)
-        merged = (
+        effective = (
             expanded_filters if llm_out.replace_all
             else merge_filters(spec.filters, expanded_filters)
         )
+
+        # A query that COMBINES a new field with the existing search is
+        # ambiguous enough to confirm rather than silently apply -- see
+        # PendingCombine's docstring. Checked against the EFFECTIVE result,
+        # not the replace_all flag directly -- confirmed live that flag is
+        # unreliable on its own (the model sometimes sets replace_all=True
+        # but *also* re-lists the old filters itself, landing on the same
+        # combined result merge_filters would have produced anyway). What
+        # actually matters is whether every old field survives into the
+        # new set (a genuine addition) as opposed to being dropped (a
+        # clean replace, e.g. "candidates in mumbai" replacing a stale
+        # unrelated search -- see rule 1b) -- that's the real ambiguity,
+        # regardless of which code path produced it.
+        existing_fields = {f.field for f in spec.filters}
+        effective_fields = {f.field for f in effective}
+        is_combining = (
+            bool(spec.filters)
+            and existing_fields.issubset(effective_fields)
+            and bool(effective_fields - existing_fields)
+        )
+        if is_combining:
+            proposed_spec = FilterSpec(logic=llm_out.logic, filters=effective)
+            labels = [
+                re.sub(r"^\S+\s*", "", c.label) for c in to_chips(effective)
+            ]
+            question = f"Do you want candidates matching {' and '.join(labels)}?"
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                pending_combine=PendingCombine(spec=proposed_spec, message=llm_out.message),
+                history=_append_history(current.history, query, question),
+            ))
+            return FilterResponse(
+                status="clarify", question=question, options=["Yes", "No"],
+                logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
+            )
+
         return self._validate_apply_persist(
-            merged, llm_out.logic, job_id, session_id, query, current.history,
+            effective, llm_out.logic, job_id, session_id, query, current.history,
             extra_message=llm_out.message,
         )
 
