@@ -101,6 +101,21 @@ class LLMOutput(BaseModel):
     # itself, only which question is being asked.
     candidate_ref: Optional[str] = None
     lookup_field: Optional[str] = None
+    # EXPERIENCE_SEARCH -- the query asks whether candidates DID something
+    # specific in their work (a project, responsibility, achievement) that
+    # isn't a named skill/tool/title/certification, e.g. "led a team of
+    # engineers", "built a payment processing system". This has no
+    # structured field to translate into -- it's matched against the actual
+    # sentences of each candidate's real job history via semantic search
+    # (see app/core/experience_index.py), not a filter. experience_query is
+    # the phrase to search for, in the recruiter's own words -- pass it
+    # through close to verbatim, don't try to normalize it into a keyword.
+    # v1 scope: EXPERIENCE_SEARCH stands alone, it does not also carry
+    # ordinary `filters` in the same turn -- a compound ask ("Python devs
+    # who led a team") should still emit EXPERIENCE_SEARCH (the harder,
+    # more specific part), not silently drop it in favor of the plain skill
+    # filter.
+    experience_query: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #

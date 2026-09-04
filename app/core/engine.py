@@ -45,8 +45,11 @@ _ORDINAL_RANK_FIELDS = {
 # list entry is already an atomic token and a substring match would wrongly
 # let "java" match "javascript". job_title/certification are the same shape
 # as university/company: free-text strings, not atomic tokens (a certification
-# entry can be a whole sentence naming several certs at once).
-_FREE_TEXT_LIST_FIELDS = {"university", "company", "job_title", "certification"}
+# entry can be a whole sentence naming several certs at once). `domain` is
+# the same shape too -- a candidate's real values are specific subdomain
+# names ("FinTech", "Payments & FinTech Engineering"), and "fintech" must
+# match either as a substring, not just the exact shorter one.
+_FREE_TEXT_LIST_FIELDS = {"university", "company", "job_title", "certification", "domain"}
 
 
 # --------------------------------------------------------------------------- #

@@ -26,6 +26,9 @@ FIELD_TYPES: dict[str, str] = {
     "certification": "string",       # certification name(s), free-text (contains check)
     "employment_gap_months": "number",  # longest single employment gap, in months
     "company_type": "string",        # Product / Service / Both, from cached LLM classification
+    "domain": "string",              # industry/functional domain (e.g. "FinTech", "Healthcare
+                                      # IT Engineering"), classified from real experience text
+                                      # -- see experience_index/classifications.jsonl
 }
 
 ALLOWED_FIELDS: list[str] = list(FIELD_TYPES.keys())
@@ -49,6 +52,7 @@ FIELD_LABELS: dict[str, str] = {
     "certification": "certification",
     "employment_gap_months": "longest employment gap (months)",
     "company_type": "company type (product/service)",
+    "domain": "industry/functional domain",
 }
 
 # Fields that MUST carry a `skill` key (which skill the number refers to).
@@ -175,4 +179,7 @@ GENERIC_FILLER_WORDS = {
 }
 
 
-VALID_INTENTS = {"FILTER_CANDIDATES", "CLARIFY", "UNSUPPORTED_FILTER", "LOOKUP"}
+VALID_INTENTS = {
+    "FILTER_CANDIDATES", "CLARIFY", "UNSUPPORTED_FILTER", "LOOKUP",
+    "EXPERIENCE_SEARCH",
+}

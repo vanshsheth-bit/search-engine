@@ -7,8 +7,9 @@ from __future__ import annotations
 import logging
 import re
 
-from app.core.candidates import get_available_fields, get_matched_candidates
+from app.core.candidates import canonicalize_country, get_available_fields, get_matched_candidates
 from app.core.engine import apply_spec, matches_filter
+from app.core import experience_index
 from app.core.lookup import answer_lookup, resolve_candidate
 from app.core.merge import merge_filters, to_chips
 from app.core.session import SessionStore, default_store
@@ -21,6 +22,7 @@ from app.llm.client import LLMClient
 from app.llm.skill_verify import verify_skill_candidates
 from app.models.schemas import (
     ChatTurn,
+    Chip,
     Filter,
     FilterResponse,
     FilterSpec,
@@ -92,6 +94,20 @@ def _extract_unit(text: str) -> str | None:
     return None
 
 
+def _canonicalize_country_filter(f: Filter) -> Filter:
+    """Resolve a colloquial country name ("USA", "UK") to the exact spelling
+    candidates are tagged with -- see candidates.canonicalize_country."""
+    if f.field != "country":
+        return f
+    if isinstance(f.value, str):
+        return f.model_copy(update={"value": canonicalize_country(f.value)})
+    if isinstance(f.value, list):
+        return f.model_copy(update={
+            "value": [canonicalize_country(v) if isinstance(v, str) else v for v in f.value]
+        })
+    return f
+
+
 class FilterService:
     def __init__(
         self,
@@ -112,6 +128,14 @@ class FilterService:
 
         current = self.store.get(session_id, job_id)
         spec = current.spec
+        logger.info(
+            "REQUEST_IN job_id=%s session_id=%s reset=%s query=%r "
+            "active_filters=%s pending_clarify=%s pending_combine=%s pending_lookup_field=%s",
+            job_id, session_id, reset, query,
+            [f.model_dump(exclude_none=True) for f in spec.filters],
+            bool(current.pending_clarify), bool(current.pending_combine),
+            current.pending_lookup_field,
+        )
 
         # A pending lookup ("which candidate did you mean?") takes priority
         # over the LLM entirely. A bare name typed/clicked in reply has no
@@ -267,11 +291,21 @@ class FilterService:
                 llm_out, current, spec, job_id, session_id, query,
             )
 
+        if llm_out.intent == "EXPERIENCE_SEARCH":
+            return self._answer_experience_search(
+                llm_out, current, spec, job_id, session_id, query,
+            )
+
         # FILTER_CANDIDATES. Expand skill concepts ("machine learning" ->
         # its real tools) against the curated taxonomy before merging into
         # session state, so what gets stored/matched is already the precise
-        # expansion, not the bare concept term.
-        expanded_filters = expand_skill_filters(llm_out.filters)
+        # expansion, not the bare concept term. Also resolve any colloquial
+        # country name ("USA", "UK") to the exact spelling candidates are
+        # tagged with -- a fixed lookup table, not something worth asking
+        # the LLM to memorize (see candidates.canonicalize_country).
+        expanded_filters = expand_skill_filters([
+            _canonicalize_country_filter(f) for f in llm_out.filters
+        ])
         effective = (
             expanded_filters if llm_out.replace_all
             else merge_filters(spec.filters, expanded_filters)
@@ -378,6 +412,129 @@ class FilterService:
             message=answer,
         )
 
+    # Similarity floor for EXPERIENCE_SEARCH -- deliberately a SEPARATE,
+    # higher constant from semantic.MIN_SIMILARITY (0.55), not a reuse of
+    # it. That value was calibrated against short skill-list text; full
+    # job-description sentences are a different kind of text with a
+    # different, noisier score distribution on this model. Confirmed
+    # empirically across two independent real queries ("led a team of
+    # engineers", "built a payment processing system"): genuine matches
+    # cluster in the top ~8-10 results (0.62-0.67), but by rank ~15-20
+    # (still 0.61-0.62) clearly unrelated text is already interleaved in
+    # -- e.g. a plain "Systems Engineer... provided hardware support" (no
+    # leadership at all) scored HIGHER (0.6157) than a genuine "Team
+    # Leader" title-only entry (0.5958) for the team-leading query. There
+    # is no clean cliff in this data -- 0.60 is where both queries' "mostly
+    # genuine" and "mostly noise" zones roughly divide, not a perfect cut.
+    _EXPERIENCE_MIN_SIMILARITY = 0.60
+
+    # ------------------------------------------------------------------ #
+    # EXPERIENCE_SEARCH: the query describes an action/achievement, not a
+    # named field -- matched against the actual sentences of each
+    # candidate's real job history via semantic search over
+    # experience_index (see that module's docstring), not a structured
+    # filter. Never invents a match: a candidate only appears here because
+    # their own real description text scored close to the query.
+    # ------------------------------------------------------------------ #
+    def _answer_experience_search(
+        self, llm_out: LLMOutput, current: SessionState, spec: FilterSpec,
+        job_id: str, session_id: str, query: str,
+    ) -> FilterResponse:
+        base = dict(logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters))
+
+        if not llm_out.experience_query:
+            message = ("I wasn't sure what to search for -- could you describe "
+                       "what they should have done?")
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                history=_append_history(current.history, query, message),
+            ))
+            return FilterResponse(status="unsupported", message=message, **base)
+
+        if not experience_index.IndexPaths().exists():
+            message = ("Experience-based search isn't available yet -- try a "
+                       "skill, title, or company filter instead.")
+            self.store.set(session_id, job_id, SessionState(
+                spec=spec, last_candidates=current.last_candidates,
+                history=_append_history(current.history, query, message),
+            ))
+            return FilterResponse(status="unsupported", message=message, **base)
+
+        # Scope to this job's real matched candidates, AND (if a structured
+        # search is already active this session) to those who already pass
+        # it -- so "Python devs who led a team" works as two turns: skill
+        # narrows first, this intersects semantically on top of that,
+        # rather than searching the whole job pool from scratch.
+        candidates = get_matched_candidates(job_id)
+        pool = apply_spec(candidates, spec) if spec.filters else candidates
+        pool_ids = {c.get("id") for c in pool}
+        by_id = {c.get("id"): c for c in pool}
+
+        try:
+            hits = experience_index.search(llm_out.experience_query, top_k=200)
+        except Exception:
+            logger.warning(
+                "experience_index.search failed for %r", llm_out.experience_query,
+                exc_info=True,
+            )
+            hits = []
+
+        # A candidate can have multiple matching experiences (chunks) --
+        # keep their single best score, restricted to the real, in-scope
+        # pool computed above (never a candidate outside this job/filter
+        # set), and below _EXPERIENCE_MIN_SIMILARITY (see that constant's
+        # docstring for the empirical basis) a "match" is noise, not a
+        # genuine hit.
+        best_score: dict[str, float] = {}
+        for hit in hits:
+            cid = hit.get("candidate_id")
+            if cid not in pool_ids:
+                continue
+            score = float(hit.get("score", 0.0))
+            if score < self._EXPERIENCE_MIN_SIMILARITY:
+                continue
+            if score > best_score.get(cid, -1.0):
+                best_score[cid] = score
+
+        matched = []
+        for cid, score in sorted(best_score.items(), key=lambda kv: -kv[1]):
+            enriched = dict(by_id[cid])
+            enriched["experience_match_score"] = round(score, 4)
+            matched.append(enriched)
+
+        logger.info(
+            "EXPERIENCE_SEARCH job_id=%s query=%r pool=%d raw_hits=%d "
+            "floor=%.2f kept=%d names=%s",
+            job_id, llm_out.experience_query, len(pool), len(hits),
+            self._EXPERIENCE_MIN_SIMILARITY, len(matched),
+            [(c["name"], c["experience_match_score"]) for c in matched[:20]],
+        )
+
+        chips = [Chip(label=f'\U0001f50e "{llm_out.experience_query}"', field="experience_query")]
+        summary = (
+            f'Found {len(matched)} matching "{llm_out.experience_query}"' if matched
+            else f'No one matched "{llm_out.experience_query}"'
+        )
+        self.store.set(session_id, job_id, SessionState(
+            spec=spec, last_candidates=matched,
+            history=_append_history(current.history, query, summary),
+        ))
+
+        if not matched:
+            return FilterResponse(
+                status="no_match",
+                total=len(candidates), showing=0,
+                logic=spec.logic, filters=spec.filters, chips=chips,
+                message=f'No candidates\' work history matched "{llm_out.experience_query}".',
+            )
+
+        return FilterResponse(
+            status="ok",
+            total=len(candidates), showing=len(matched),
+            logic=spec.logic, filters=spec.filters, chips=chips,
+            candidates=matched,
+        )
+
     # ------------------------------------------------------------------ #
     # Deterministic chip edit (no LLM)
     # ------------------------------------------------------------------ #
@@ -409,6 +566,13 @@ class FilterService:
         available = get_available_fields(job_id)
         result = validate_filters(filters, available)
         history = history if history is not None else []
+        logger.info(
+            "VALIDATE job_id=%s input_filters=%s -> ok=%s validated=%s skipped=%s "
+            "unsupported=%s error=%r",
+            job_id, [f.model_dump(exclude_none=True) for f in filters],
+            result.ok, [f.model_dump(exclude_none=True) for f in result.filters],
+            result.skipped, result.unsupported, result.error,
+        )
 
         if not result.ok:
             status = "unsupported" if result.unsupported else "error"
@@ -435,6 +599,11 @@ class FilterService:
         spec = FilterSpec(logic=logic, filters=result.filters)
         candidates = get_matched_candidates(job_id)
         filtered = apply_spec(candidates, spec)
+        logger.info(
+            "APPLY_SPEC job_id=%s pool=%d logic=%s exact_matches=%d names=%s",
+            job_id, len(candidates), spec.logic, len(filtered),
+            [c.get("name") for c in filtered[:20]],
+        )
 
         # Widen skill filters to also count a candidate who has the same
         # thing in different words -- a curated related tool (merged_tools.json)
@@ -458,6 +627,12 @@ class FilterService:
                 -c["partial_skill_match"]["matched"], -c.get("match_score", 0),
             ))
             filtered = filtered + partial
+        if full_extra or partial:
+            logger.info(
+                "FUZZY_SKILL_MATCH job_id=%s full_extra=%d(%s) partial=%d(%s)",
+                job_id, len(full_extra), [c.get("name") for c in full_extra],
+                len(partial), [c.get("name") for c in partial],
+            )
 
         # Persist the new valid state, including who's now in view -- this
         # is what a later LOOKUP ("which college did he go to") resolves
@@ -488,6 +663,11 @@ class FilterService:
         # prompt.py's compound-query rule. Merged with skip_note so both
         # sources of "here's what couldn't be applied" reach the recruiter.
         skip_note = " ".join(m for m in (extra_message, skip_note) if m) or None
+        logger.info(
+            "RESULT job_id=%s status=%s total=%d showing=%d skip_note=%r",
+            job_id, "no_match" if not filtered else "ok",
+            len(candidates), len(filtered), skip_note,
+        )
 
         if not filtered:
             return FilterResponse(

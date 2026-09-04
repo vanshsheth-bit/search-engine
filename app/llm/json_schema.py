@@ -48,6 +48,7 @@ def build_filter_json_schema() -> dict:
             "message": {"type": "string"},
             "candidate_ref": {"type": "string"},
             "lookup_field": {"type": "string", "enum": ALLOWED_FIELDS},
+            "experience_query": {"type": "string"},
         },
         "required": ["intent", "replace_all"],
     }

@@ -335,6 +335,25 @@ FEW_SHOTS = [
                      {"field": "company_type", "operator": "in", "value": ["Product", "Both"]}]},
     ),
     (
+        # CONFIRMED LIVE FAILURE, exact phrasing, before "domain" existed:
+        # "fintech" got routed into "skill" (a tool/technology field),
+        # matching literally nobody -- "fintech" is not a technology, it's
+        # an industry. See rule 6c-ii: domain/industry language is its own
+        # field now, distinct from skill even when it sounds tool-shaped
+        # ("fintech applications", "built for healthcare").
+        "CURRENT FILTERS: []\nNEW QUERY: Find engineers who have built fintech applications using Java and Spring Boot.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "engineer"},
+                     {"field": "domain", "operator": "contains", "value": "fintech"},
+                     {"field": "skill", "operator": "contains", "value": "Java"},
+                     {"field": "skill", "operator": "contains", "value": "Spring Boot"}]},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Someone with a healthcare background.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "domain", "operator": "contains", "value": "healthcare"}]},
+    ),
+    (
         # A DIFFERENT concept that's still genuinely unsupported (company
         # size), combined with real criteria -- this is what the "message
         # alongside FILTER_CANDIDATES" pattern is actually for: apply the
@@ -378,11 +397,9 @@ FEW_SHOTS = [
                      {"field": "company_tier", "operator": "gte", "value": "High"}]},
     ),
     (
-        "CURRENT FILTERS: []\nNEW QUERY: Candidates studied from a tier 1 college.",
-        {"intent": "FILTER_CANDIDATES", "logic": "AND",
-         "filters": [{"field": "college_tier", "operator": "gte", "value": "High"}]},
-    ),
-    (
+        # Same output as "Someone from a tier 1 college" above -- kept as
+        # CURRENT FILTERS context for the LOOKUP example directly below, not
+        # a duplicate lesson (that one's already taught).
         "CURRENT FILTERS: [{\"field\": \"college_tier\", \"operator\": \"gte\", "
         "\"value\": \"High\"}]\nNEW QUERY: Which college does he belong to?",
         {"intent": "LOOKUP", "lookup_field": "university"},
@@ -400,6 +417,33 @@ FEW_SHOTS = [
         {"intent": "UNSUPPORTED_FILTER",
          "message": "Contact details aren't tracked -- only location, "
                      "experience, education, university, company, and skills."},
+    ),
+    (
+        # Contrast with "Candidates who have worked as a Senior Software
+        # Engineer" further below: that names a ROLE (job_title), this
+        # describes an ACHIEVEMENT -- no single field covers "did X",
+        # matched against real job-description text instead (rule 6f-v).
+        "CURRENT FILTERS: []\nNEW QUERY: Someone who has led a team of engineers.",
+        {"intent": "EXPERIENCE_SEARCH",
+         "experience_query": "led a team of engineers"},
+    ),
+    (
+        # CONFIRMED LIVE FAILURE, exact phrasing: without this specific
+        # question-shaped example, this got WRONGLY turned into three
+        # guessed job_title filters ("Team Lead", "Lead Engineer",
+        # "Manager") under AND logic, matching nobody -- the declarative
+        # phrasing above ("Someone who has...") didn't generalize to this
+        # question shape ("Who has...?") on its own. Same lesson as every
+        # other routing rule in this prompt (see rule 3's devops example):
+        # reinforce a reproduced failure with its own worked example.
+        "CURRENT FILTERS: []\nNEW QUERY: Who has led a team of engineers?",
+        {"intent": "EXPERIENCE_SEARCH",
+         "experience_query": "led a team of engineers"},
+    ),
+    (
+        "CURRENT FILTERS: []\nNEW QUERY: Candidates who built a payment processing system.",
+        {"intent": "EXPERIENCE_SEARCH",
+         "experience_query": "built a payment processing system"},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Show me the top 5 candidates.",
@@ -514,36 +558,25 @@ RULES:
 1. If the query updates a field already present in CURRENT FILTERS (e.g. a new
    location or a changed experience threshold), REPLACE that filter. Do not
    emit a conflicting duplicate.
-1b. CHECK THIS EXPLICITLY FOR EVERY QUERY WHEN CURRENT FILTERS IS NON-EMPTY:
-   count how many DIFFERENT FIELDS are in CURRENT FILTERS. If there are 2 or
-   more, go through them one by one and ask "does NEW QUERY reference or
-   build on THIS specific field, even implicitly?" (a connector like "also"/
-   "and"/"too"/"as well" counts; restating or changing that exact field's
-   value also counts). If ANY field in CURRENT FILTERS gets a "no" -- NEW
-   QUERY is silent about it entirely, not even implicitly -- then NEW QUERY
-   is a fresh, standalone search, NOT a refinement, REGARDLESS of whether it
-   happens to repeat or update one of the other fields (e.g. restating the
-   same city, or picking a new one, still counts as "silent" about the
-   fields it never mentions). In that case set "replace_all": true so the
-   backend REPLACES the whole filter set with `filters` instead of merging
-   field-by-field -- otherwise the unmentioned old filters (e.g. a stale
-   skill/experience requirement from an earlier turn) silently stay applied
-   underneath a query that said nothing about them, producing a wrong/empty
-   result the recruiter has no reason to expect. This applies even when the
-   query updates a field that's ALSO in CURRENT FILTERS (rule 1 still tells
-   you to replace THAT field's value) -- rule 1 and replace_all are
-   independent: rule 1 is about what value that one field gets, replace_all
-   is about whether the OTHER, unmentioned fields survive. Only set
-   "replace_all" false (the default) when EVERY field in CURRENT FILTERS
-   gets a "yes" -- the query genuinely touches, adds to, or explicitly
-   preserves each one.
+1b. When CURRENT FILTERS has 2+ different fields, check EACH one: does NEW
+   QUERY reference or build on it, even implicitly (a connector like "also"/
+   "and"/"too"/"as well" counts; restating or changing that field's value
+   counts too)? If ANY field gets a clear "no" -- NEW QUERY never touches it,
+   not even implicitly, no matter whether it repeats or updates one of the
+   OTHER fields -- treat NEW QUERY as a fresh standalone search: set
+   "replace_all": true so the backend drops the whole old filter set instead
+   of silently keeping the unmentioned stale ones underneath it (confirmed
+   live: without this, "candidates in mumbai" typed over a stale
+   Experience>=3/Python search kept returning 0 matches, even with plenty of
+   real Mumbai candidates). This is independent of rule 1 -- rule 1 governs
+   what VALUE a field gets when it IS referenced; replace_all governs
+   whether fields NOT referenced survive at all. Only leave replace_all
+   false when EVERY field in CURRENT FILTERS gets a "yes".
 2. "X+ years of experience" with NO named skill/technology -> field
    "experience" (their overall career length), operator "gte"/"lte"/etc,
-   numeric "value". Do NOT use "skill_experience" unless a specific
-   skill/technology/tool is actually named alongside the years
-   ("X+ years of <Skill>" -> field "skill_experience", operator "gte",
-   "skill": "<Skill>", numeric "value"). When in doubt with no skill named,
-   use "experience", never "skill_experience" with an empty skill.
+   numeric "value". "X+ years of <Skill>" (a specific skill/technology named
+   alongside the years) -> field "skill_experience", operator "gte", "skill":
+   "<Skill>", numeric "value" -- never "skill_experience" with no skill named.
    IMPORTANT: "X years of <Skill>" is exactly ONE filter (skill_experience),
    never TWO filters. Do NOT emit a separate "experience" filter for the
    years AND a second filter for the skill name -- that double-counts the
@@ -648,11 +681,10 @@ RULES:
    "country" (e.g. "India", "United States") are DIFFERENT fields -- a
    country name never goes into "location" (candidate locations are stored
    city-level; "location equals India" could never match anyone even with a
-   flawless parse) and a city never goes into "country". Use the data's own
-   exact country spelling, not a colloquial short form, since this is an
-   exact match: "US"/"USA"/"America" -> "United States", "UK"/"Britain" ->
-   "United Kingdom", "UAE" -> "United Arab Emirates". For any other
-   colloquial country name, use its standard full English name.
+   flawless parse) and a city never goes into "country". Use the country's
+   standard full English name as the value (a common short form like "USA"
+   or "UK" is resolved to the exact match automatically -- just name the
+   country, don't worry about exact spelling).
 6b. Three DIFFERENT fields cover education -- never substitute one for
    another just because a query mentions "college"/"school"/"education":
    - "education" = degree LEVEL ONLY (High School/Diploma/Bachelor/Master/
@@ -684,11 +716,27 @@ RULES:
    based" -> operator "in", value ["Service", "Both"]. "NOT a services
    company" (negative) -> operator "not_in", value ["Service"] (excludes
    pure-service only; "Both" still has product work, so it stays included).
-   Industry and company size are still NOT tracked -- those (and anything
-   that isn't clearly product/service/both) stay "UNSUPPORTED_FILTER",
+   Company size is still NOT tracked -- that stays "UNSUPPORTED_FILTER",
    never approximated via "company_tier" (tier is about caliber/ranking, a
    completely different axis from business model) NOR via "company_type"
    for something that isn't actually a product-vs-service question.
+6c-ii. "domain" = the industry or functional specialty someone actually
+   worked in, from real classified experience data -- NOT a tool, role
+   title, or company name. Recognize industry/specialty language: "fintech
+   experience", "healthcare background", "worked in gaming", "financial
+   services domain", "insurance industry", "cybersecurity experience" (as a
+   FIELD, not a tool) -> field "domain", operator "contains", value = the
+   plain keyword the recruiter used (e.g. "fintech", "healthcare",
+   "insurance") -- do NOT try to guess or spell out the exact underlying
+   category name (e.g. do not write "Payments & FinTech Engineering"
+   yourself); a short, lowercase, real-world term is matched as a substring
+   against the real classification data, so the plain word is exactly
+   right, and inventing a fancier-sounding value is more likely wrong, not
+   more precise. CONFIRMED LIVE FAILURE, do not repeat it: "engineers who
+   have built fintech applications" used to route "fintech" into "skill"
+   (matching nobody, since it is not a tool/technology), before this field
+   existed -- domain language must go here, never into "skill", "company",
+   or "job_title", even though "fintech application" sounds tool-shaped.
 6d. Negation on a ranked field (education, college_tier, company_tier) --
    "not a low tier company", "not low tier", "no high schoolers" -- means
    "not_equals" that value, NOT "lte"/"gte" the SAME value (operator "lte"
@@ -733,6 +781,27 @@ RULES:
    either ("GPA above X", "graduated in/after/before <year>") must return
    "UNSUPPORTED_FILTER", never approximated via "education" (which is
    degree LEVEL only, e.g. Bachelor/Master, not a grade or a year).
+6f-v. A query asking whether candidates DID something specific in their
+   work -- a project, responsibility, or achievement described in a phrase,
+   not a named tool/role/credential ("led a team of engineers", "built a
+   payment processing system", "migrated infrastructure to the cloud",
+   "reduced latency by optimizing the database") -- is intent
+   "EXPERIENCE_SEARCH", not "FILTER_CANDIDATES". Put the phrase, close to
+   verbatim, in "experience_query". Distinguish this from the fields above:
+   a bare tool/product name is still "skill" ("knows Kubernetes"), a bare
+   role name on its own ("worked as a Manager", "held the title Team Lead")
+   is still "job_title", a bare certificate name is still "certification"
+   ("AWS certified") -- but a VERB PHRASE describing what someone DID
+   ("led", "built", "managed", "reduced", "migrated", "grew", "launched" +
+   an object) is EXPERIENCE_SEARCH even when it sounds similar to a title.
+   CONFIRMED LIVE FAILURE MODE, do not repeat it: "Who has led a team of
+   engineers?" was WRONGLY turned into THREE guessed job_title filters
+   ("Team Lead", "Lead Engineer", "Manager") under AND logic, matching
+   nobody -- job_title is for a title a candidate's resume actually STATES,
+   never a list of plausible-sounding titles invented to stand in for a
+   described action. When the query describes an action/achievement,
+   EXPERIENCE_SEARCH is not a fallback for "unsure" cases, it is the
+   correct, first-choice answer -- prefer it over guessing at job_title.
 6g. A general years-of-experience number and a separately-named skill in the
    SAME query ("10+ years who know AWS", "senior, knows Python") are TWO
    independent filters -- "experience" (gte N) AND "skill" (contains) --

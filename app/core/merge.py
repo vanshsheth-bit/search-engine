@@ -21,6 +21,7 @@ _FIELD_ICON = {
     "certification": "📜",
     "employment_gap_months": "🕳️",
     "company_type": "🏭",
+    "domain": "🏦",
 }
 
 

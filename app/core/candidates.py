@@ -23,6 +23,7 @@ import re
 from functools import lru_cache
 
 from app.core.company_type import company_types_for
+from app.core.experience_index import classifications_by_candidate
 from app.core.skill_taxonomy import canonicalize
 from app.core.vocabulary import EDUCATION_RANK_LABELS, education_rank
 
@@ -92,6 +93,39 @@ _HISTORICAL_CITY_ALIASES = {
     "baroda": "Vadodara",
     "cochin": "Kochi",
 }
+
+# Colloquial country names -> the exact spelling Location.json's real
+# country_name field uses (verified against the actual gazetteer data, not
+# guessed) -- a "country" filter is matched by exact string equality against
+# that field, so "USA"/"America" must resolve to the same "United States"
+# candidates are actually tagged with, same reasoning as
+# _HISTORICAL_CITY_ALIASES above. Deterministic lookup, not something the
+# LLM needs to memorize -- previously handled by an explicit prompt rule
+# (verbose, one more place for a translation mistake to slip in); moved here
+# since it's a fixed table, not a judgment call.
+_COUNTRY_ALIASES = {
+    "usa": "United States",
+    "us": "United States",
+    "u.s.": "United States",
+    "u.s.a.": "United States",
+    "america": "United States",
+    "uk": "United Kingdom",
+    "u.k.": "United Kingdom",
+    "britain": "United Kingdom",
+    "great britain": "United Kingdom",
+    "uae": "United Arab Emirates",
+    "u.a.e.": "United Arab Emirates",
+}
+
+
+def canonicalize_country(name: str | None) -> str | None:
+    """Resolve a colloquial country name to Location.json's exact spelling
+    (see _COUNTRY_ALIASES) -- identity-preserving for anything not in the
+    table (the LLM's own full-name guess for other countries, e.g. "Japan",
+    is left as-is)."""
+    if not name:
+        return name
+    return _COUNTRY_ALIASES.get(name.strip().lower(), name)
 
 
 @lru_cache(maxsize=1)
@@ -529,6 +563,12 @@ def _adapt_resume(raw: dict) -> dict:
         # module docstring for why that's what makes this scale) -- never
         # classified live during a request.
         "company_type": company_types_for(companies, _industry_lookup_for(companies)),
+        # The SET of subdomains across all their real experiences (e.g.
+        # ["FinTech", "Payments & FinTech Engineering"]) -- from a real
+        # classifier run over their actual description text, see
+        # _load_candidate_domains. Empty/absent if the experience index
+        # hasn't been built for this dataset yet.
+        "domain": _load_candidate_domains().get(raw.get("processId"), []),
         "skills": skills,
         "job_title": job_titles,
         "certification": certifications,
@@ -548,6 +588,44 @@ def _load_raw_resumes() -> list[dict]:
 def _load_resumes_by_process_id() -> dict[str, dict]:
     raw_records = _load_raw_resumes()
     return {r["processId"]: _adapt_resume(r) for r in raw_records if r.get("processId")}
+
+
+@lru_cache(maxsize=1)
+def _load_candidate_domains() -> dict[str, list[str]]:
+    """{candidate_id (processId): sorted list of distinct SUBDOMAIN labels
+    across all their real experiences}, e.g. ["FinTech", "Payments & FinTech
+    Engineering"] -- from experience_index/classifications.jsonl (see
+    app.core.experience_classifier), a real classifier run over each
+    experience's actual description text, not an LLM guess made at request
+    time. Uses the fine-grained SUBDOMAIN (212 categories, e.g. "FinTech",
+    "Backend Engineering", "Risk/Compliance") rather than the coarser
+    top-level domain (11 categories, e.g. "Finance") -- a recruiter asking
+    for "fintech experience" means the specific thing, not "worked in
+    finance at all" (which would wrongly also match Treasury/Audit/Retail
+    Banking people who have nothing to do with fintech).
+
+    Empty dict if the index hasn't been built yet (see
+    scripts/build_experience_index.py) -- candidates then simply get no
+    "domain" key at all (see _adapt_resume), so get_available_fields
+    correctly reports this field as unavailable rather than the app
+    crashing or silently matching nobody.
+
+    Known limitation, inherited from the classifier itself: real, ambiguous
+    experience text sometimes lands on the wrong subdomain when several
+    correct-but-different labels split the vote (confirmed on real data --
+    see experience_classifier.py's own docstring for a concrete example).
+    This is real classifier noise, not a bug in this join."""
+    by_candidate = classifications_by_candidate()
+    domains: dict[str, list[str]] = {}
+    for candidate_id, rows in by_candidate.items():
+        subdomains = {
+            row["classification"]["subdomain"]
+            for row in rows
+            if isinstance(row.get("classification"), dict) and row["classification"].get("subdomain")
+        }
+        if subdomains:
+            domains[candidate_id] = sorted(subdomains)
+    return domains
 
 
 # Caps keep a single well-attested company's evidence from blowing up prompt
@@ -709,4 +787,6 @@ def get_available_fields(job_id: str) -> set[str]:
             available.add("employment_gap_months")
         if "company_type" in c:
             available.add("company_type")
+        if "domain" in c:
+            available.add("domain")
     return available

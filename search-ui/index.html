@@ -254,7 +254,11 @@
   // matching. NOTE: only valid while the server points at the real data
   // files (PARSED_RESUMES_PATH etc. unset / at repo-root defaults) --
   // switch to "SYN-BACKEND-01" if running against test_data/synthetic_*.json.
-  const JOB_ID = "00000096";
+  //
+  // Currently set to "00000103" for semantic/fuzzy skill-matching testing
+  // (99 candidates, real PyTorch/TensorFlow/XGBoost/Docker/Kubernetes/React
+  // data) -- switch back to "00000096" for location-diversity testing.
+  const JOB_ID = "00000103";
 
   function getSessionId() {
     let id = localStorage.getItem("cf_session_id");

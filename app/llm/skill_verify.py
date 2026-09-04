@@ -64,7 +64,13 @@ def verify_skill_candidates(term: str, shortlist: list[tuple[str, list[str]]]) -
                 "format": {"type": "array", "items": {"type": "integer"}},
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0},
+                # Same num_ctx as the main translation call (app/llm/client.py)
+                # -- a mismatched context size forces Ollama to reload the
+                # model between the two calls within a single request
+                # (confirmed live: `ollama ps` showed a stale ctx=4096 after
+                # this call ran, vs. the 12288 the main call had just used),
+                # real avoidable overhead on top of an already-slow prompt.
+                "options": {"temperature": 0, "num_ctx": settings.num_ctx},
             },
             timeout=settings.llm_timeout,
         )

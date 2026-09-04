@@ -97,6 +97,13 @@ class LLMClient:
                 body = resp.json()
                 content = body["message"]["content"]
                 data = json.loads(content)
+                # Raw structure of every real LLM call, exactly as the model
+                # produced it (before Pydantic validation/defaults fill
+                # anything in) -- printed as its own log line so the JSON
+                # shape is easy to read/copy from the console, separate from
+                # the timing line below.
+                logger.info("LLM raw output for query=%r:\n%s", query,
+                            json.dumps(data, indent=2, ensure_ascii=False))
                 # Ollama's own breakdown (ns -> ms) -- separates prompt
                 # prefill from actual token generation, so a slow request can
                 # be diagnosed instead of just seen as "one big number".
