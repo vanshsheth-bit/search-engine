@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.candidates import canonicalize_country, get_matched_candidates
+from app.core.candidates import canonicalize_country, get_matched_candidates, _extract_skill_years
 from app.core.engine import apply_spec
 from app.core.experience_index import IndexPaths
 from app.models.schemas import Filter, FilterSpec
@@ -45,6 +45,53 @@ def test_canonicalize_country_leaves_unknown_names_unchanged():
 def test_canonicalize_country_handles_none_and_empty():
     assert canonicalize_country(None) is None
     assert canonicalize_country("") == ""
+
+
+def test_skill_years_credited_from_experience_description():
+    experience = [
+        {"description": "Technologies: Java, Python, Docker", "duration_years": 4.5},
+    ]
+    years = _extract_skill_years(experience, ["Python", "Java", "Docker", "AWS"])
+    assert years == {"python": 4.5, "java": 4.5, "docker": 4.5}
+    assert "aws" not in years  # never mentioned -- absent, not zero
+
+
+def test_skill_years_sums_across_multiple_experiences():
+    experience = [
+        {"description": "Built services in Python and Go", "duration_years": 2.0},
+        {"description": "Led a Python team using AWS Lambda", "duration_years": 3.0},
+    ]
+    years = _extract_skill_years(experience, ["Python", "Go", "AWS"])
+    assert years["python"] == 5.0
+    assert years["go"] == 2.0
+    assert years["aws"] == 3.0
+
+
+def test_skill_years_word_boundary_avoids_false_positives():
+    # "R" and "Go" are real skill names but also common English words/
+    # substrings -- a naive substring/short-token match would wrongly
+    # credit them from "Report" and "ago"/"algorithm".
+    experience = [
+        {"description": "Wrote a quarterly Report and improved algorithm efficiency",
+         "duration_years": 3.0},
+    ]
+    years = _extract_skill_years(experience, ["R", "Go"])
+    assert years == {}
+
+
+def test_skill_years_handles_symbol_suffixed_skill_names():
+    experience = [
+        {"description": "Maintained legacy services in C++ and C#", "duration_years": 6.0},
+    ]
+    years = _extract_skill_years(experience, ["C++", "C#", "C"])
+    assert years["c++"] == 6.0
+    assert years["c#"] == 6.0
+    assert "c" not in years  # bare "C" never actually appears standalone
+
+
+def test_skill_years_ignores_experiences_with_no_duration():
+    experience = [{"description": "Worked with Python", "duration_years": 0}]
+    assert _extract_skill_years(experience, ["Python"]) == {}
 
 
 @_index_not_built

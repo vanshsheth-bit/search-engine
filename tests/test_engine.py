@@ -1,10 +1,20 @@
 """Deterministic tests — no LLM required. Cover engine + validation + merge."""
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from app.core.engine import apply_spec, matches_filter
 from app.core.merge import merge_filters
 from app.core.validation import validate_filters
 from app.models.schemas import Filter, FilterSpec
+
+_ROOT = os.path.join(os.path.dirname(__file__), "..")
+_requires_taxonomy = pytest.mark.skipif(
+    not os.path.isfile(os.path.join(_ROOT, "merged_tools.json")),
+    reason="merged_tools.json not present in this checkout",
+)
 
 CANDIDATES = [
     {"id": "c1", "name": "A", "match_score": 92, "location": "Mumbai",
@@ -267,3 +277,164 @@ def test_not_in_operator_on_list_valued_field():
 
     cand2 = {"id": "y", "skills": ["terraform"]}
     assert matches_filter(cand2, f) is True
+
+
+# --------------------------------------------------------------------------- #
+# "<Skill> developer" job_title self-heal (validation.py) -- regression for a
+# confirmed live bug: "python developer" was routed as a literal job_title
+# phrase that matches 0 of 103 real candidates, when 40 of them really have
+# Python as a declared skill. See validation.py's _GENERIC_DEV_SUFFIXES
+# docstring for the full rationale.
+# --------------------------------------------------------------------------- #
+@_requires_taxonomy
+def test_skill_developer_phrase_heals_to_skill_filter():
+    res = validate_filters(
+        [Filter(field="job_title", operator="contains", value="Python developer")]
+    )
+    assert res.ok is True
+    assert len(res.filters) == 1
+    assert res.filters[0].field == "skill"
+    assert res.filters[0].operator == "contains"
+    assert res.filters[0].value == "Python"
+
+
+@_requires_taxonomy
+def test_skill_developer_phrase_heal_preserves_negation():
+    res = validate_filters(
+        [Filter(field="job_title", operator="not_contains", value="Java developer")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "skill"
+    assert res.filters[0].operator == "not_contains"
+    assert res.filters[0].value == "Java"
+
+
+@_requires_taxonomy
+def test_skill_developer_phrase_heal_drops_leading_modifier():
+    # "Senior Python Developer" -- the full prefix "senior python" isn't a
+    # real tool, but the word immediately before "developer" is.
+    res = validate_filters(
+        [Filter(field="job_title", operator="contains", value="Senior Python Developer")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "skill"
+    assert res.filters[0].value == "Python"
+
+
+@_requires_taxonomy
+def test_generic_dev_suffix_alone_is_not_healed():
+    # "Software Developer" is a real, common title -- "software" is not a
+    # taxonomy tool, so this must stay job_title untouched.
+    res = validate_filters(
+        [Filter(field="job_title", operator="contains", value="Software Developer")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "job_title"
+    assert res.filters[0].value == "Software Developer"
+
+
+def test_engineer_suffix_is_never_healed():
+    # Deliberately out of scope even without needing the taxonomy at all --
+    # "engineer" titles (DevOps Engineer, ML Engineer, Data Engineer, ...)
+    # are established standalone conventions, not a generic-role-noun
+    # standing in for a skill. Must survive completely unchanged.
+    res = validate_filters(
+        [Filter(field="job_title", operator="contains", value="DevOps Engineer")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "job_title"
+    assert res.filters[0].value == "DevOps Engineer"
+
+
+# --------------------------------------------------------------------------- #
+# Country-abbreviation-in-"location" self-heal (validation.py) -- regression
+# for a confirmed live eval failure: "engineers based in the UAE" routed
+# "UAE" into "location" (a city field) instead of "country", which can never
+# match any real candidate.
+# --------------------------------------------------------------------------- #
+def test_location_country_abbreviation_heals_to_country_filter():
+    res = validate_filters(
+        [Filter(field="location", operator="equals", value="UAE")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "country"
+    assert res.filters[0].value == "United Arab Emirates"
+
+
+def test_location_real_city_name_is_never_healed():
+    # A real city must never be reinterpreted as a country -- only the
+    # small, known set of country abbreviations triggers this heal.
+    res = validate_filters(
+        [Filter(field="location", operator="equals", value="Mumbai")]
+    )
+    assert res.ok is True
+    assert res.filters[0].field == "location"
+    assert res.filters[0].value == "Mumbai"
+
+
+# --------------------------------------------------------------------------- #
+# notice_period unit default (validation.py) -- regression for a confirmed
+# live eval failure where the model omitted "unit" on an otherwise-correct
+# notice_period filter.
+# --------------------------------------------------------------------------- #
+def test_notice_period_missing_unit_defaults_to_days():
+    res = validate_filters(
+        [Filter(field="notice_period", operator="lte", value=90)]
+    )
+    assert res.ok is True
+    assert res.filters[0].unit == "days"
+
+
+def test_notice_period_explicit_unit_is_not_overridden():
+    res = validate_filters(
+        [Filter(field="notice_period", operator="lte", value=3, unit="months")]
+    )
+    assert res.ok is True
+    assert res.filters[0].unit == "months"
+
+
+# --------------------------------------------------------------------------- #
+# Generic skill-filler-word guard (validation.py) -- regression for a
+# confirmed live bug: the bare query "Skills" (naming no real technology)
+# was parsed as a literal skill value, then the fuzzy-matching pipeline
+# treated the meaningless term as real and "verified" candidates against
+# it. Same class of guard as the existing university/company one below.
+# --------------------------------------------------------------------------- #
+def test_generic_skill_word_rejected():
+    res = validate_filters(
+        [Filter(field="skill", operator="contains", value="Skills")]
+    )
+    assert res.ok is False
+    assert "Skills" in res.error
+
+
+def test_generic_skill_words_all_rejected():
+    for word in ("skill", "experience", "expertise", "knowledge", "technology",
+                 "tools", "ability", "qualifications"):
+        res = validate_filters(
+            [Filter(field="skill", operator="contains", value=word)]
+        )
+        assert res.ok is False, word
+
+
+def test_real_skill_name_still_passes():
+    res = validate_filters(
+        [Filter(field="skill", operator="contains", value="Python")]
+    )
+    assert res.ok is True
+    assert res.filters[0].value == "Python"
+
+
+def test_generic_skill_word_does_not_sink_a_compound_query():
+    # A bad "skill" clause must not abort an otherwise-valid compound
+    # query -- same graceful-degradation principle as the existing
+    # relocation/Kubernetes test above.
+    res = validate_filters(
+        [
+            Filter(field="experience", operator="gte", value=5),
+            Filter(field="skill", operator="contains", value="Skills"),
+        ]
+    )
+    assert res.ok is True
+    assert {f.field for f in res.filters} == {"experience"}
+    assert any("Skills" in s for s in res.skipped)

@@ -116,13 +116,30 @@ def _load_taxonomy() -> tuple[dict[str, str], dict[str, list[tuple[str, float]]]
     return alias_to_canonical, canonical_to_related_sorted, canonical_to_aliases
 
 
+# Confirmed live: expanding "Kubernetes" (a tool with unusually rich
+# taxonomy data) with NO cap on related_tools pulled in 66 items -- not
+# just Kubernetes' own aliases (safe, same technology, e.g. "k8s",
+# "kubectl") but genuinely DIFFERENT, merely-commonly-adjacent tools
+# (Docker, Helm, Prometheus, Grafana, Rancher, ...). A candidate with ONLY
+# Prometheus (a monitoring tool) would wrongly satisfy a filter meant to
+# mean "Kubernetes or Terraform". This directly contradicts rule 3's own
+# stated guidance elsewhere in this prompt ("4-6 CONCRETE, real, well-known
+# technologies") -- the expansion logic itself had no such limit. Capping
+# related_tools (never the alias list -- an alias is always the exact same
+# technology by definition, unlimited and always safe) keeps every
+# umbrella-concept expansion this small, bounded, more precise set,
+# matching what the prompt already promises the recruiter.
+_MAX_RELATED_TOOLS = 6
+
+
 def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list[str] | None:
     """If `term` (a tool name, or any of its aliases) is in the taxonomy,
-    return [canonical name, its aliases, related tools >= min_weight] --
-    every real-world phrasing of the same thing, plus concrete tools that
-    satisfy the concept. Returns None (not []) when the term isn't covered
-    at all, so callers can distinguish "found, no strong related tools" from
-    "taxonomy has nothing to say -- fall back to the LLM's own knowledge"."""
+    return [canonical name, its aliases, up to _MAX_RELATED_TOOLS related
+    tools >= min_weight] -- every real-world phrasing of the same thing,
+    plus a small, bounded set of concrete tools that satisfy the concept.
+    Returns None (not []) when the term isn't covered at all, so callers
+    can distinguish "found, no strong related tools" from "taxonomy has
+    nothing to say -- fall back to the LLM's own knowledge"."""
     alias_to_canonical, canonical_to_related, canonical_to_aliases = _load_taxonomy()
     canonical = alias_to_canonical.get(_norm(term))
     if canonical is None:
@@ -130,10 +147,14 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
 
     expanded = [canonical]
     expanded.extend(canonical_to_aliases.get(canonical, []))
-    expanded.extend(
+    # canonical_to_related is already sorted by weight descending (see
+    # _load_taxonomy) -- taking the first N after the threshold filter
+    # keeps the highest-relevance related tools, not an arbitrary subset.
+    related = [
         rtool for rtool, weight in canonical_to_related.get(canonical, [])
         if weight >= min_weight
-    )
+    ][:_MAX_RELATED_TOOLS]
+    expanded.extend(related)
     # de-dupe, preserve order (canonical first, most-relevant related next)
     seen, out = set(), []
     for t in expanded:

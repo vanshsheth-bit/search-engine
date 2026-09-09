@@ -204,6 +204,44 @@ add("skc_007", "Exclude candidates who don't have Kubernetes.",
     note="Matches prompt.py's own few-shot verbatim -- 'exclude ... without "
          "X' resolves to a positive contains on X, not not_contains.")
 
+add("skc_009", "Find PhD-level data scientists with Python and machine learning skills",
+    {"intent": "FILTER_CANDIDATES", "logic": "AND",
+     "predicates": [
+         {"field": "education", "operator": "gte", "value": "Doctorate"},
+         {"field": "job_title", "operator": "contains", "value": "data scientist"},
+         {"field": "skill", "operator": "contains", "value": "Python"},
+         {"field": "skill", "operator": "in",
+          "value_includes": ["machine learning", "TensorFlow", "PyTorch"]},
+     ]},
+    ["skill_concept", "compound", "regression"],
+    note="Regression case for a live bug (2026-09-07): with 4 different "
+         "field types in one sentence (degree, job title, a named skill, "
+         "an umbrella concept), 'machine learning' degraded to a bare "
+         "contains filter -- matching 0 of 99 real candidates, since none "
+         "have that literal phrase as a skill string (real resumes list "
+         "the actual tools). Same 'drops out under compound load' failure "
+         "shape already fixed once for company_type (see tier_010).")
+
+add("skc_008", "Project Managers: Agile + Jira, 10+ years",
+    {"intent": "FILTER_CANDIDATES", "logic": "AND",
+     "predicates": [
+         {"field": "job_title", "operator": "contains", "value": "Project Manager"},
+         {"field": "skill", "operator": "contains", "value": "Agile"},
+         {"field": "skill", "operator": "contains", "value": "Jira"},
+         {"field": "experience", "operator": "gte", "value": 10},
+     ],
+     "forbid_fields": []},
+    ["skill_concept", "regression"],
+    note="Regression case for a live bug (2026-09-07): 'Agile + Jira' was "
+         "wrongly emitted as ONE filter, operator 'in', value "
+         "['Agile','Jira'] -- OR semantics, matching candidates with only "
+         "ONE of the two. Confirmed against real data: 8 of 14 results "
+         "that way had only one of the two tools, not both. Two specific "
+         "named tools requested together must be two separate 'contains' "
+         "filters (AND semantics via the default logic), never an 'in' "
+         "list -- that operator is reserved for genuine umbrella-concept "
+         "expansion (rule 3) or explicit either/or (rule 4).")
+
 
 # --------------------------------------------------------------------------- #
 # education level / rank (rule 5b)
@@ -355,9 +393,13 @@ add("tier_011", "Software developer in Mumbai at a large company.",
 
 add("tier_012", "Candidates from a top 10 school.",
     {"intent": "UNSUPPORTED_FILTER"},
-    ["tier_name_type", "unsupported"],
+    ["tier_name_type", "unsupported", "regression"],
     note="A category of schools with no direct name or tier answer -- "
-         "must not guess college_tier=High as a stand-in.")
+         "must not guess college_tier=High as a stand-in. Was a live "
+         "silent-wrong failure before a dedicated few-shot was added -- "
+         "rule 6b's text alone named this exact example but wasn't "
+         "reliably followed without a worked example, same lesson as "
+         "every other rule in this prompt.")
 
 add("tier_013", "Candidates who did not study at IIT.",
     {"intent": "FILTER_CANDIDATES",
@@ -441,6 +483,17 @@ add("unsup_006", "night shift candidates only",
 add("clar_001", "Show experienced candidates.",
     {"intent": "CLARIFY", "clarify_field": "experience", "clarify_operator": "gte"},
     ["clarify_open"])
+
+add("clar_003", "Show me fresh graduates or entry-level candidates.",
+    {"intent": "CLARIFY", "clarify_field": "experience", "clarify_operator": "lte"},
+    ["clarify_open", "regression"],
+    note="Regression case for a live bug (2026-09-07): 'fresh graduates/"
+         "entry-level' was wrongly mapped to an EDUCATION filter "
+         "(education lte Bachelor) instead of CLARIFYing on experience -- "
+         "a degree says nothing about career length (confirmed against "
+         "real data: this showed 20+-year veterans as 'entry-level' "
+         "matches). Same category as senior/experienced/mid-level above, "
+         "just the mirror-image (lte, not gte) threshold direction.")
 
 add("clar_002", "Mid level software developer.",
     {"intent": "CLARIFY", "clarify_field": "experience", "clarify_operator": "gte"},
@@ -573,12 +626,125 @@ add("comp_002", "8+ years, Kubernetes, and open to relocating, at a large compan
          {"field": "relocation", "operator": "equals", "value": True},
      ],
      "message_mentions": ["company size"],
-     "forbid_fields": ["company_tier"]},
-    ["compound", "unsupported"],
+     "forbid_fields": ["company_tier", "company_type"]},
+    ["compound", "unsupported", "regression"],
     note="One genuinely unsupported clause mixed with three valid ones -- "
          "apply the real filters and say honestly what couldn't be "
          "applied, never fabricate a field for it and never drop the "
-         "whole query to UNSUPPORTED_FILTER.")
+         "whole query to UNSUPPORTED_FILTER. Confirmed live TWO different "
+         "fabrications for this exact query across sessions: company_tier "
+         "once, company_type another time. EXPECTED TO KEEP FAILING HERE: "
+         "after two rounds of prompt strengthening produced byte-identical "
+         "fabrications 6/6 times, this is now enforced deterministically "
+         "in service.py's _strip_fabricated_company_size_filters instead "
+         "(see tests/test_service.py's "
+         "test_company_size_query_strips_fabricated_company_type) -- this "
+         "eval case still measures the raw LLM's real (imperfect) "
+         "behavior, which is honest and useful signal on its own; the "
+         "user-facing guarantee comes from the service-layer test, not "
+         "from this one passing.")
+
+
+add("skc_010", "candidates who has experinece in machine learning for 2years",
+    {"intent": "CLARIFY"},
+    ["skill_experience", "skill_concept", "regression"],
+    note="Regression case for a live bug (2026-09-07): 'machine learning' "
+         "is an umbrella concept, not one specific tool, so it cannot fill "
+         "skill_experience's required single skill name -- must CLARIFY "
+         "which tool, never guess one. Standalone version (no history) of "
+         "the hist_002 case below, which reproduces the same root cause "
+         "surfacing as a DIFFERENT symptom (silently echoing stale "
+         "filters) once real conversation history is involved.")
+
+# --------------------------------------------------------------------------- #
+# history-bias regression: a live, exactly-reproduced bug (2026-09-07) where
+# 3 near-identical retries (typo fixes on the SAME request) followed by a
+# real topic change, then a genuinely NEW unrelated query, caused the model
+# to just echo the previous turn's filters back completely unchanged --
+# never even attempting to translate the new request. Confirmed via direct
+# reproduction with this EXACT history against LLMClient.translate() before
+# the rule 1c fix in prompt.py; this case locks in that the fix holds.
+# --------------------------------------------------------------------------- #
+_HISTORY_BIAS_HISTORY = [
+    {"role": "user", "content": "candidates with experince in product based companies"},
+    {"role": "assistant", "content": "Applied filters: \U0001f3ed Product/Both-based"},
+    {"role": "user", "content": "candidates with experiencne in product based comapnies"},
+    {"role": "assistant", "content": "Applied filters: \U0001f3ed Product/Both-based"},
+    {"role": "user", "content": "candidates with experience in product based comapnies"},
+    {"role": "assistant", "content": "Applied filters: \U0001f3ed Product/Both-based"},
+    {"role": "user", "content": "show senio engineers from the gaming industry woth experience in experience in c++"},
+    {"role": "assistant", "content": "Applied filters: \U0001f4bc Senior Engineer, \U0001f3e6 gaming, \U0001f9e9 C++"},
+]
+
+add("hist_002", "candidates who has experinece in machine learning for 2years",
+    {"intent": "CLARIFY"},
+    ["history_bias_regression", "skill_experience"],
+    current_filters=[
+        {"field": "education", "operator": "gte", "value": "Bachelor"},
+        {"field": "skill", "operator": "contains", "value": "React"},
+        {"field": "skill", "operator": "contains", "value": "JavaScript"},
+    ],
+    history=[
+        {"role": "user", "content": "Show me fresh graduates or entry-level candidates who know React and JavaScript"},
+        {"role": "assistant", "content": "Applied filters: \U0001f393 Bachelor, \U0001f9e9 React, \U0001f9e9 JavaScript"},
+    ],
+    note="Second, DIFFERENT live reproduction of the history-bias failure "
+         "shape (2026-09-07) -- this time from just ONE prior turn, not 3 "
+         "repeated retries like hist_001. Root cause here was NOT "
+         "repetition priming, but the model having no correct move for "
+         "'machine learning for 2 years' at all (see skc_010's rule 2b "
+         "fix) -- when genuinely unsure, it fell back to echoing "
+         "CURRENT FILTERS unchanged rather than attempting a real "
+         "translation or asking. Fixing the underlying ambiguity (CLARIFY "
+         "instead of guessing) fixes both symptoms together.")
+
+add("hist_003", "want a guy who has worked in fintech company for atleast 3years",
+    {"intent": "FILTER_CANDIDATES", "logic": "AND",
+     "predicates": [
+         {"field": "domain", "operator": "contains", "value": "fintech"},
+         {"field": "experience", "operator": "gte", "value": 3},
+     ]},
+    ["history_bias_regression"],
+    current_filters=[
+        {"field": "education", "operator": "gte", "value": "Bachelor"},
+        {"field": "skill", "operator": "contains", "value": "React"},
+        {"field": "skill", "operator": "contains", "value": "JavaScript"},
+    ],
+    history=[
+        {"role": "user", "content": "Show me fresh graduates or entry-level candidates who know React and JavaScript"},
+        {"role": "assistant", "content": "Applied filters: \U0001f393 Bachelor, \U0001f9e9 React, \U0001f9e9 JavaScript"},
+        {"role": "user", "content": "candidates who has experinece in machine learning for 2years"},
+        {"role": "assistant", "content": "Applied filters: \U0001f393 Bachelor, \U0001f9e9 React, \U0001f9e9 JavaScript"},
+    ],
+    note="Third, DIFFERENT live reproduction of the history-bias failure "
+         "shape (2026-09-07) -- the sneakiest variant: TWO prior turns had "
+         "ALREADY (wrongly) echoed the identical stale answer to two "
+         "different questions (the rule-1c mistake, since fixed), and that "
+         "self-made repetition became a false pattern the model latched "
+         "onto for a THIRD, genuinely different query. rule 1c alone did "
+         "NOT stop this -- needed rule 1d specifically calling out that "
+         "the model's own prior answers looking similar to each other is "
+         "never evidence they're correct to repeat again.")
+
+add("hist_001", "candidates with datas cience wityh BI skills",
+    {"intent": "FILTER_CANDIDATES", "logic": "AND", "replace_all": True,
+     "predicates": [
+         {"field": "domain", "operator": "contains", "value": "data science"},
+         {"field": "skill", "operator": "contains", "value": "BI"},
+     ]},
+    ["history_bias_regression"],
+    current_filters=[
+        {"field": "job_title", "operator": "contains", "value": "Senior Engineer"},
+        {"field": "domain", "operator": "contains", "value": "gaming"},
+        {"field": "skill", "operator": "contains", "value": "C++"},
+    ],
+    history=_HISTORY_BIAS_HISTORY,
+    note="Regression case for the exact live bug: 3 repeated typo-fix "
+         "retries of the same request, then a topic change, then a "
+         "genuinely new unrelated query -- the model must translate the "
+         "new query fresh (replace_all, brand new filters), never echo "
+         "the previous turn's filters back unchanged just because recent "
+         "history was repetitive.")
 
 
 # --------------------------------------------------------------------------- #

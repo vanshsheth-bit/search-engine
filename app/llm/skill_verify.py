@@ -59,18 +59,26 @@ def verify_skill_candidates(term: str, shortlist: list[tuple[str, list[str]]]) -
         resp = requests.post(
             f"{settings.ollama_url}/api/chat",
             json={
-                "model": settings.model,
+                # Deliberately NOT settings.model -- confirmed empirically
+                # (real data, not a guess) that a smaller model strong at
+                # the main structured-translation task is measurably WORSE
+                # at THIS different, harder judgment call: qwen3:4b matched
+                # lab/chemistry technicians with zero programming skills
+                # against a plain "python" search. See
+                # config.Settings.skill_verify_model's docstring.
+                "model": settings.skill_verify_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "format": {"type": "array", "items": {"type": "integer"}},
                 "stream": False,
                 "think": False,
-                # Same num_ctx as the main translation call (app/llm/client.py)
-                # -- a mismatched context size forces Ollama to reload the
-                # model between the two calls within a single request
-                # (confirmed live: `ollama ps` showed a stale ctx=4096 after
-                # this call ran, vs. the 12288 the main call had just used),
-                # real avoidable overhead on top of an already-slow prompt.
-                "options": {"temperature": 0, "num_ctx": settings.num_ctx},
+                # A small, fixed context, NOT settings.num_ctx -- that value
+                # is sized for the main translation call's full ~9,800-token
+                # system prompt; this call's prompt is a term + up to 8
+                # candidates' skill lists (a few hundred to ~2,000 tokens),
+                # so reusing the larger figure would only make
+                # skill_verify_model allocate more KV-cache VRAM than it
+                # needs, pushing more of ITS weights onto CPU for no reason.
+                "options": {"temperature": 0, "num_ctx": 4096},
             },
             timeout=settings.llm_timeout,
         )

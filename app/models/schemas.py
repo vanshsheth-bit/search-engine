@@ -41,9 +41,38 @@ class Filter(BaseModel):
         return (self.field, (self.skill or "").lower())
 
 
+class AlternativeGroup(BaseModel):
+    """A bounded, non-recursive way to express "either this WHOLE set of
+    requirements, or that one" spanning DIFFERENT fields -- e.g. "a Master's
+    from a Tier-1 university OR 10+ years of experience". Deliberately NOT a
+    fully general nested boolean tree: real recruiter queries essentially
+    never need more than "everything else required, AND at least one of
+    these alternative requirement-sets also holds" -- one extra level, not
+    arbitrary depth. A single field's own list of alternative VALUES
+    ("Mumbai, Pune, or Bangalore") does NOT need this at all -- that's a
+    single Filter with operator "in" (the engine already evaluates "in"
+    correctly against any field, list-valued or scalar, ordinal or not; see
+    engine.matches_filter's final fallback). AlternativeGroup exists only
+    for the genuinely cross-field case a single "in" list cannot express.
+
+    Every branch is itself an AND of one or more filters (e.g. the
+    "Master's from Tier-1" branch is TWO filters -- education AND
+    college_tier -- that must both hold for that branch to count). The
+    group as a whole is satisfied if ANY branch's filters ALL match."""
+    branches: list[list[Filter]] = Field(default_factory=list)
+
+
 class FilterSpec(BaseModel):
     logic: Literal["AND", "OR", "NOT"] = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    # ANDed against `filters` above -- every group here must be satisfied
+    # (by at least one of ITS branches) in addition to everything in
+    # `filters`. See AlternativeGroup's docstring.
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
+    # See LLMOutput.preferred_filters -- never excludes anyone, just ranked/
+    # noted. Persisted separately so it survives across turns the same way
+    # `filters` does.
+    preferred_filters: list[Filter] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,17 +134,48 @@ class LLMOutput(BaseModel):
     # specific in their work (a project, responsibility, achievement) that
     # isn't a named skill/tool/title/certification, e.g. "led a team of
     # engineers", "built a payment processing system". This has no
-    # structured field to translate into -- it's matched against the actual
-    # sentences of each candidate's real job history via semantic search
-    # (see app/core/experience_index.py), not a filter. experience_query is
-    # the phrase to search for, in the recruiter's own words -- pass it
-    # through close to verbatim, don't try to normalize it into a keyword.
-    # v1 scope: EXPERIENCE_SEARCH stands alone, it does not also carry
-    # ordinary `filters` in the same turn -- a compound ask ("Python devs
-    # who led a team") should still emit EXPERIENCE_SEARCH (the harder,
-    # more specific part), not silently drop it in favor of the plain skill
-    # filter.
+    # SINGLE structured field to translate into on its own -- it's matched
+    # against the actual sentences of each candidate's real job history via
+    # semantic search (see app/core/experience_index.py), not a filter.
+    # experience_query is the phrase to search for, in the recruiter's own
+    # words -- pass it through close to verbatim, don't try to normalize it
+    # into a keyword.
+    #
+    # A compound ask CAN also carry ordinary `filters` in the SAME turn when
+    # the query separately names a real structured requirement alongside the
+    # achievement -- e.g. "backend engineers who worked on a supply chain
+    # platform" names BOTH a job_title AND an achievement. Put the
+    # structured part in `filters` exactly as FILTER_CANDIDATES would, and
+    # the achievement phrase in `experience_query`, still under intent
+    # EXPERIENCE_SEARCH (the achievement is the harder, more specific part
+    # that decides the intent) -- the backend applies both: `filters`
+    # narrows the pool first, `experience_query` semantically searches
+    # within it (see service.py's _answer_experience_search). Confirmed
+    # live this used to be silently dropped entirely: "backend engineer who
+    # worked on X" only ever searched X, matching non-engineers too. Only
+    # emit `filters` here for a genuine separate requirement named in the
+    # SAME sentence -- don't invent one, same rule 6a-i discipline as
+    # everywhere else.
     experience_query: Optional[str] = None
+    # See AlternativeGroup's docstring -- an "either this WHOLE requirement-
+    # set or that one" ask spanning DIFFERENT fields (e.g. "a Master's from
+    # a Tier-1 university OR 10+ years of experience"). ANDed against
+    # `filters` above. A single field's own list of alternative VALUES
+    # ("Mumbai, Pune, or Bangalore") does NOT belong here -- that's a
+    # single ordinary Filter in `filters` with operator "in" instead.
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
+    # Soft-preference language ("prefer", "ideally", "bonus if", "nice to
+    # have") is NOT the same as a requirement, and must never silently
+    # become one -- confirmed live: "prefer candidates ... in Mumbai, Pune,
+    # or Bangalore" got folded into the same hard AND as everything else,
+    # zeroing out real candidates who matched every actual requirement but
+    # happened to be elsewhere. Put PREFERRED (not required) criteria here
+    # instead of in `filters` -- the backend never excludes anyone for
+    # failing one of these, it only notes honestly that the preference
+    # couldn't be strictly enforced (see service.py). Same Filter shape as
+    # `filters`, just a different bucket with different (non-exclusionary)
+    # semantics.
+    preferred_filters: list[Filter] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +200,12 @@ class Chip(BaseModel):
     label: str
     field: str
     skill: Optional[str] = None
+    # True for a chip built from an AlternativeGroup ("Master's (Tier-1)
+    # OR 10+ yrs exp") or from `preferred_filters` -- the UI renders these
+    # visually distinct from an ordinary hard-required chip, since neither
+    # kind excludes a candidate the way a normal filter does.
+    preferred: bool = False
+    alternative: bool = False
 
 
 class FilterResponse(BaseModel):
@@ -148,6 +214,8 @@ class FilterResponse(BaseModel):
     showing: int = 0
     logic: str = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
+    preferred_filters: list[Filter] = Field(default_factory=list)
     chips: list[Chip] = Field(default_factory=list)
     candidates: list[dict] = Field(default_factory=list)
     # clarify

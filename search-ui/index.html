@@ -391,9 +391,22 @@
       };
     }
     if (resp.status === "ok") {
-      const intro = resp.showing === 1
-        ? `Found 1 candidate matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"}.`
-        : `Found ${resp.showing} candidates matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"} (of ${resp.total} total).`;
+      // Break out full vs. partial skill matches up front -- a bare
+      // "Found 14 matching..." reads as 14 people who satisfy everything,
+      // when some of them are really "close, but missing a requirement"
+      // (see candidateCardHtml's partial-match badge below). Surfacing the
+      // split in the summary itself means a recruiter who never scrolls
+      // still sees it, not just the ones who read every card.
+      const partialCount = (resp.candidates || []).filter((c) => c.partial_skill_match).length;
+      const fullCount = resp.showing - partialCount;
+      const target = chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that";
+      const intro = partialCount === 0
+        ? (resp.showing === 1
+            ? `Found 1 candidate matching ${target}.`
+            : `Found ${resp.showing} candidates matching ${target} (of ${resp.total} total).`)
+        : `Found ${fullCount} full match${fullCount === 1 ? "" : "es"} + ` +
+          `${partialCount} partial match${partialCount === 1 ? "" : "es"} for ${target} ` +
+          `(of ${resp.total} total).`;
       const note = resp.message ? `<div class="card-line">${escapeHtml(resp.message)}</div>` : "";
       const cards = (resp.candidates || []).map(candidateCardHtml).join("");
       return { html: `${intro}${note}<div class="cards">${cards}</div>` };

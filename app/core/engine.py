@@ -112,13 +112,22 @@ def _skills_map(candidate: dict) -> dict[str, dict]:
         out = {}
         for name, meta in raw.items():
             if isinstance(meta, dict):
-                out[name.lower()] = meta
+                out[name.lower()] = dict(meta)
             else:  # {"Python": 5}
                 out[name.lower()] = {"years": meta}
-        return out
-    if isinstance(raw, (list, tuple)):
-        return {str(s).lower(): {"years": None} for s in raw}
-    return {}
+    elif isinstance(raw, (list, tuple)):
+        out = {str(s).lower(): {"years": None} for s in raw}
+    else:
+        out = {}
+    # Real per-skill years inferred from resume text (see
+    # candidates._extract_skill_years) -- overlays the default None above so
+    # skill_experience filters can actually resolve instead of always
+    # failing on absent data. A skill this candidate has but never
+    # mentioned in any experience's description keeps years=None (unknown),
+    # not 0 (verified none) -- see matches_filter's handling of None.
+    for skill, years in (candidate.get("skill_years") or {}).items():
+        out.setdefault(skill.lower(), {})["years"] = years
+    return out
 
 
 def _notice_days(candidate: dict):
@@ -200,20 +209,42 @@ def matches_filter(candidate: dict, f: Filter) -> bool:
         return False
 
 
+def _alternative_group_matches(candidate: dict, group) -> bool:
+    """A candidate satisfies an AlternativeGroup if AT LEAST ONE branch's
+    filters ALL match (AND within a branch, OR across branches) -- see
+    AlternativeGroup's docstring in schemas.py. An empty branch (no
+    filters) is vacuously satisfied, same as an empty overall filter list
+    elsewhere in this engine."""
+    return any(
+        all(matches_filter(candidate, f) for f in branch)
+        for branch in group.branches
+    )
+
+
 def apply_spec(candidates: list[dict], spec: FilterSpec) -> list[dict]:
-    """Apply the full filter spec with AND/OR/NOT logic. Scores untouched."""
-    if not spec.filters:
+    """Apply the full filter spec with AND/OR/NOT logic. Scores untouched.
+
+    `spec.alternative_groups` (see AlternativeGroup's docstring) is always
+    ANDed on top of the result of `spec.filters`/`spec.logic` -- a
+    candidate must pass the ordinary filters AND satisfy every alternative
+    group, regardless of what `spec.logic` is for the ordinary filters."""
+    if not spec.filters and not spec.alternative_groups:
         return list(candidates)
 
     kept = []
     for c in candidates:
-        checks = [matches_filter(c, f) for f in spec.filters]
-        if spec.logic == "OR":
-            keep = any(checks)
-        elif spec.logic == "NOT":
-            keep = not any(checks)
-        else:  # AND
-            keep = all(checks)
+        if spec.filters:
+            checks = [matches_filter(c, f) for f in spec.filters]
+            if spec.logic == "OR":
+                keep = any(checks)
+            elif spec.logic == "NOT":
+                keep = not any(checks)
+            else:  # AND
+                keep = all(checks)
+        else:
+            keep = True
+        if keep and spec.alternative_groups:
+            keep = all(_alternative_group_matches(c, g) for g in spec.alternative_groups)
         if keep:
             kept.append(c)
 

@@ -347,6 +347,57 @@ def _is_company_placeholder(norm: str) -> bool:
     return any(marker in norm for marker in _COMPANY_PLACEHOLDER_MARKERS)
 
 
+# Some resumes in this real dataset have a `personalInfo.name` that isn't a
+# person's name at all -- a technology/methodology phrase that apparently
+# got mis-extracted from elsewhere in the document (confirmed: 4 real
+# records have this, e.g. "Page Object" -- a Selenium testing pattern --
+# "Sap Restful", "Hdinsight And Databricks"). Same failure SHAPE as
+# _COMPANY_PLACEHOLDER_MARKERS above (garbage data reaching a field it
+# doesn't belong in), same fix: detect and treat as ABSENT rather than
+# display it as if it were a real person's name -- "Page Object" showing up
+# in real search results as a candidate is worse than showing no name at
+# all (the UI already falls back to the processId / "Unnamed" when name is
+# missing, same as any other absent field in this engine).
+_BOGUS_NAME_MARKERS = (
+    "object", "restful", "framework", "database", "server", "client",
+    "endpoint", "controller", "interface", "component", "microservice",
+    "pipeline", "architecture", "infrastructure", "hdinsight",
+    "databricks", "kubernetes", "docker", "sap", "sdk", "middleware",
+    "backend", "frontend", "devops",
+)
+
+
+def _is_bogus_name(name: str) -> bool:
+    """Word-boundary check -- "Kapil" must not match the "api"-shaped
+    marker, "sap" must not match a name that merely contains it as a
+    substring ("Prasap") -- only a WHOLE word in the name matching a
+    marker counts."""
+    words = {w for w in re.split(r"\s+", name.strip().lower()) if w}
+    return bool(words & set(_BOGUS_NAME_MARKERS))
+
+
+# Some resumes have education-section text (a university, a department) in
+# the EXPERIENCE/company field instead -- same class of data corruption as
+# the bogus-name case above, this time feeding the company-type evidence
+# pipeline (company_type.py's warm_cache_with_evidence). Confirmed on real
+# data: running that pass classified "chandigarh university" -> Service,
+# "csir central electronics engineering research institute" -> Product,
+# etc. -- a university being labeled Product/Service is a category error
+# no amount of better LLM reasoning fixes, because the input itself should
+# never have been sent as if it were a company. Deliberately narrow (just
+# "university"/"college"/"department of"/"polytechnic") rather than also
+# "institute"/"academy"/"fellowship" -- some real companies genuinely have
+# those words in their name (e.g. "Battelle Memorial Institute"), so a
+# broader list would trade a data-corruption fix for a new false-negative
+# one; the words kept here are ones no real company is plausibly named.
+_EDUCATION_INSTITUTION_MARKERS = ("university", "college", "department of", "polytechnic")
+
+
+def _looks_like_education_institution(company: str) -> bool:
+    norm = company.strip().lower()
+    return any(marker in norm for marker in _EDUCATION_INSTITUTION_MARKERS)
+
+
 # Real resume company fields are frequently the real company name PLUS
 # trailing junk a recruiter never typed -- a department, a city, a country
 # ("Syngene International Ltd. Discovery & Med.Chem Bangalore India" instead
@@ -504,6 +555,71 @@ def _current_location(personal: dict, experience: list[dict]) -> str | None:
     return None
 
 
+# Chars treated as "continuing" a tech-name token for boundary purposes --
+# plain alnum plus the symbols that routinely appear INSIDE a skill's own
+# name ("C++", "C#", "Node.js"). Without also excluding these at the
+# boundary, a short skill like "C" would wrongly match as a standalone hit
+# inside "C++" or "C#" (correctly ruled out for pure-alnum runs like
+# "ABC", but "+"/"#" aren't alnum, so a plain not-adjacent-to-alnum check
+# alone still lets it through).
+_SKILL_BOUNDARY_CONTINUATION = r"[A-Za-z0-9+#]"
+
+
+# Per-skill duration cache, keyed by the exact skill token -- resumes reuse
+# the same canonical skill spellings heavily (see `canonicalize`), so this
+# avoids recompiling the same word-boundary regex for every candidate who
+# lists "Python".
+@lru_cache(maxsize=2048)
+def _skill_mention_pattern(skill: str) -> re.Pattern:
+    """Whole-term match, not naive substring: `\\b`-style boundaries would
+    themselves misfire on symbol-suffixed tokens like "C++" or "Node.js"
+    (word-boundary is only defined at a word/non-word transition, and the
+    trailing symbols confuse it), so boundaries are defined explicitly via
+    _SKILL_BOUNDARY_CONTINUATION instead. Confirmed necessary: without it, a
+    skill named "R" or "Go" would credit an experience purely for
+    containing the English word "or"/"ago", and a skill named "C" would
+    wrongly match inside "C++" or "C#"."""
+    return re.compile(
+        rf"(?<!{_SKILL_BOUNDARY_CONTINUATION}){re.escape(skill)}"
+        rf"(?!{_SKILL_BOUNDARY_CONTINUATION})",
+        re.IGNORECASE,
+    )
+
+
+def _extract_skill_years(experience: list[dict], known_skills: list[str]) -> dict[str, float]:
+    """{skill (lowercased): total years} inferred from which of the
+    candidate's own already-canonicalized skills are actually mentioned in
+    each experience's free-text description, summed against that
+    experience's real duration_years -- e.g. "Technologies: Java, Python,
+    ..." on a 4.5-year role credits 4.5 years each to Java and Python.
+
+    This is a real, deterministic signal read from the resume text itself
+    (see skill_experience in engine.py), not an LLM guess -- the LLM never
+    sees candidate data. Known limitations, both accepted as reasonable
+    first-cut approximations rather than over-engineered away:
+    - overlapping/concurrent roles double-count their overlap (each
+      experience's duration is credited independently);
+    - a skill merely *listed* once on a role (vs. actually used throughout
+      it) still gets credited the role's full duration -- this is the same
+      granularity the resume itself offers; there's no finer-grained "used
+      for 3 of these 4.5 years" signal to draw on.
+    A skill that never appears in any experience description simply gets no
+    entry here (not zero) -- see engine._skills_map, which then correctly
+    treats it as "unknown", not "definitely zero years"."""
+    totals: dict[str, float] = {}
+    for exp in experience:
+        desc = exp.get("description") or ""
+        if not desc:
+            continue
+        years = exp.get("duration_years") or 0.0
+        if years <= 0:
+            continue
+        for skill in known_skills:
+            if _skill_mention_pattern(skill).search(desc):
+                totals[skill.lower()] = totals.get(skill.lower(), 0.0) + years
+    return {k: round(v, 1) for k, v in totals.items()}
+
+
 def _adapt_resume(raw: dict) -> dict:
     personal = raw.get("personalInfo", {}) or {}
     experience = raw.get("experience", []) or []
@@ -539,10 +655,11 @@ def _adapt_resume(raw: dict) -> dict:
     gaps = raw.get("gaps") or []
     longest_gap_months = max((g.get("gap_months") or 0) for g in gaps) if gaps else 0
 
+    raw_name = (personal.get("name") or "").strip()
     resolved_location = _current_location(personal, experience)
     candidate = {
         "id": raw.get("processId"),
-        "name": personal.get("name"),
+        "name": None if _is_bogus_name(raw_name) else (raw_name or None),
         "location": resolved_location,
         # From the SAME real gazetteer data as location, not an LLM guess --
         # deterministic, and absent (not guessed) when the location came
@@ -570,12 +687,16 @@ def _adapt_resume(raw: dict) -> dict:
         # hasn't been built for this dataset yet.
         "domain": _load_candidate_domains().get(raw.get("processId"), []),
         "skills": skills,
+        # Real per-skill years inferred from resume text -- see
+        # _extract_skill_years. Absent (not zero) for a skill never actually
+        # mentioned in any experience description.
+        "skill_years": _extract_skill_years(experience, skills),
         "job_title": job_titles,
         "certification": certifications,
         "employment_gap_months": longest_gap_months,
     }
     # Drop keys with no data rather than asserting a false "field is present".
-    return {k: v for k, v in candidate.items() if v not in (None, [], "")}
+    return {k: v for k, v in candidate.items() if v not in (None, [], "", {})}
 
 
 @lru_cache(maxsize=1)
@@ -659,6 +780,8 @@ def _load_company_evidence() -> dict[str, list[str]]:
             company = e.get("company")
             desc = (e.get("description") or "").strip()
             if not (isinstance(company, str) and company.strip() and desc):
+                continue
+            if _looks_like_education_institution(company):
                 continue
             norm = company.strip().lower()
             bucket = evidence.setdefault(norm, {})
@@ -779,6 +902,8 @@ def get_available_fields(job_id: str) -> set[str]:
             available.add("notice_period")
         if "skills" in c:
             available.add("skill")
+        if "skill_years" in c:
+            available.add("skill_experience")
         if "job_title" in c:
             available.add("job_title")
         if "certification" in c:

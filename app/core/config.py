@@ -37,6 +37,17 @@ class Settings:
     llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "30"))
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "2"))
     num_ctx: int = int(os.getenv("NUM_CTX", "4096"))
+    # Model for skill_verify.py's specific judgment call, independent of the
+    # main `model` used for translation -- confirmed empirically on real
+    # data that a smaller/faster model (qwen3:4b) strong at the structured
+    # translation task is measurably WORSE at this different, harder
+    # reasoning task ("is this candidate's real skill list genuinely
+    # equivalent to the term asked for") -- e.g. matched lab/chemistry
+    # technicians with zero programming skills against a plain "python"
+    # search. That call is small and infrequent (a term + up to 8 skill
+    # lists, not the full system prompt), so a stronger model here stays
+    # fast even when `model` itself is set to something smaller/faster.
+    skill_verify_model: str = os.getenv("SKILL_VERIFY_MODEL", "qwen3:8b")
     # Session TTL in seconds (in-memory store housekeeping).
     session_ttl: int = int(os.getenv("SESSION_TTL", "3600"))
 
