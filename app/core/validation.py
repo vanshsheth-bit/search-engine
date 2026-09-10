@@ -22,7 +22,7 @@ from app.core.vocabulary import (
     SKILL_SCOPED_FIELDS,
     bare_degree_rank,
 )
-from app.models.schemas import Filter
+from app.models.schemas import AlternativeGroup, Filter
 
 
 @dataclass
@@ -141,7 +141,7 @@ def validate_filters(
 
         if f.field in SKILL_SCOPED_FIELDS and not f.skill:
             skipped.append(
-                "I need to know which skill a years-of-experience filter applies to"
+                "I need to know which skill or domain a years-of-experience filter applies to"
             )
             continue
 
@@ -164,7 +164,12 @@ def validate_filters(
             continue
 
         if available_fields is not None:
-            probe = "skill" if f.field in {"skill", "skill_experience"} else f.field
+            if f.field in {"skill", "skill_experience"}:
+                probe = "skill"
+            elif f.field == "domain_experience":
+                probe = "domain"
+            else:
+                probe = f.field
             if probe not in available_fields:
                 skipped.append(f"I don't have {label} data for these candidates")
                 any_unsupported = True
@@ -180,3 +185,40 @@ def validate_filters(
         return ValidationResult(ok=False, unsupported=any_unsupported, error=msg)
 
     return ValidationResult(ok=True, filters=validated, skipped=skipped)
+
+
+def validate_alternative_groups(
+    groups: list[AlternativeGroup],
+    available_fields: set[str] | None = None,
+) -> tuple[list[AlternativeGroup], list[str]]:
+    """Validates each group's filters via validate_filters, unchanged above.
+    Unlike the top-level flat list (where one bad clause among independent
+    AND'd filters is safely dropped alone -- see validate_filters' own
+    docstring), a group's filters are logically coupled: they together form
+    ONE eligibility route. Silently dropping one leaf out of a route would
+    silently WEAKEN what the route means (e.g. "Master's from a Tier-1
+    university" degrading to just "Master's" if the college_tier leaf
+    failed validation) -- a worse silent failure than dropping the whole
+    route. So: if ANY leaf in a group fails validation, the ENTIRE group is
+    dropped, with a note explaining why. If every group ends up dropped,
+    the caller is expected to drop alternative_groups entirely -- the rest
+    of the flat query still applies; this function never fails the whole
+    request over it, same "a bad piece is dropped, doesn't abort the rest"
+    philosophy as validate_filters.
+
+    Every surviving leaf is forced hard=True regardless of what was set --
+    see AlternativeGroup's docstring: a soft preference has no meaning
+    inside an eligibility route."""
+    validated_groups: list[AlternativeGroup] = []
+    notes: list[str] = []
+    for group in groups:
+        if not group.filters:
+            continue
+        result = validate_filters(list(group.filters), available_fields)
+        if not result.ok or len(result.filters) != len(group.filters):
+            reason = result.error or "; ".join(result.skipped) or "one of its requirements isn't supported"
+            notes.append(f"Dropped an alternative requirement route ({reason})")
+            continue
+        forced = [f.model_copy(update={"hard": True}) for f in result.filters]
+        validated_groups.append(AlternativeGroup(filters=forced))
+    return validated_groups, notes

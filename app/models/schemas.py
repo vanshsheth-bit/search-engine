@@ -25,6 +25,16 @@ class Filter(BaseModel):
     value: Union[str, int, float, bool, list[Any]]
     skill: Optional[str] = None
     unit: Optional[str] = None
+    # True (default) = a hard requirement, excludes non-matching candidates,
+    # exactly today's behavior for every existing caller (PATCH endpoint,
+    # PendingCombine-stored specs, every pre-v2 construction site) -- the
+    # default is what makes this field additive rather than a breaking
+    # change. False = a stated preference (schema_v2's "nice to have"): does
+    # NOT exclude anyone, only re-ranks survivors of the hard filters upward
+    # when they also satisfy it -- see service.py's _apply_soft_preferences.
+    # Only meaningful under AND logic (see _hard_only's docstring for why
+    # OR/NOT ignore this flag and treat every filter as hard).
+    hard: bool = True
 
     def key(self) -> tuple:
         """Identity for merge/dedup: a location replaces a location, but two
@@ -41,9 +51,78 @@ class Filter(BaseModel):
         return (self.field, (self.skill or "").lower())
 
 
+class AlternativeGroup(BaseModel):
+    """One eligibility "route" in an OR-of-AND-groups requirement, e.g.
+    "Master's from a Tier-1 university OR 10+ years total experience" is two
+    AlternativeGroups: [education gte Master, college_tier gte High] and
+    [experience gte 10]. A candidate passes the group requirement if they
+    satisfy ALL filters in AT LEAST ONE group (groups are OR'd against each
+    other; each group's own filters are AND'd). A group cannot contain
+    another group -- verified against every real "or" pattern in this
+    project's few-shots and the triggering query that motivated this model:
+    none needs deeper nesting, and this also sidesteps any question of
+    whether Ollama's grammar compiler supports self-referential JSON schema,
+    by construction.
+
+    Exists because top-level `FilterSpec.logic` is ONE flat operator over
+    the ENTIRE `filters` list (see engine.apply_spec) -- setting it to "OR"
+    to express one embedded alternative would wrongly turn every OTHER
+    AND'd requirement in the same query into an optional alternative too.
+    Same-field alternatives ("AWS or Azure") don't need this at all -- the
+    existing "in" operator already covers those; this is only for a genuine
+    cross-field "either requirement route A or route B" embedded alongside
+    other hard requirements.
+
+    Every filter here is forced hard=True at validation time (see
+    validation.validate_alternative_groups) -- a soft preference has no
+    meaning inside an eligibility route; a route is satisfied or not."""
+    filters: list[Filter] = Field(default_factory=list)
+
+
 class FilterSpec(BaseModel):
     logic: Literal["AND", "OR", "NOT"] = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    # Additional gate, ANDed on top of `filters`/`logic` above -- see
+    # AlternativeGroup's docstring. Only meaningful combined with
+    # logic=="AND", same restriction/rationale as Filter.hard (see
+    # service._hard_only's docstring) -- under top-level OR/NOT there's no
+    # coherent way to compose "OR of top-level filters" with "AND-gate on
+    # top of that", so this is dropped whenever logic != "AND".
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# schema_v2 extraction shapes (PROMPT_SCHEMA=v2 only)
+#
+# The v2 prompt never asks the model to resolve a raw span into a final
+# filter value -- it only reports WHAT WAS SAID (a span, a coarse bucket,
+# hard-vs-soft, exact-vs-expand). app/core/taxonomy.py::resolve_filters()
+# turns these into real `Filter` objects, reusing skill_taxonomy.py's
+# canonicalize/expand_skill_term exactly as the v1 path already does --
+# these two model classes are the intermediate, unresolved representation,
+# never handed to engine.py/validation.py directly.
+# --------------------------------------------------------------------------- #
+class StructuredItem(BaseModel):
+    field: str
+    operator: str
+    raw_text: Optional[str] = None
+    value: Union[str, int, float, bool, list[Any]]
+    hard: bool = True
+    # ONLY populated when field == "skill_experience" -- which named skill
+    # the number of years refers to (mirrors Filter.skill's same role).
+    skill: Optional[str] = None
+
+
+class ToolItem(BaseModel):
+    raw_text: str
+    # "exact": one specific named tool was demanded -- resolved via
+    # skill_taxonomy.canonicalize() only (alias fix, never widened).
+    # "expand": the recruiter signaled flexibility ("familiar with X",
+    # "like Y") -- resolved via skill_taxonomy.expand_skill_term(), which
+    # widens to related tools when the taxonomy has something to say, and
+    # falls back to canonicalize()-only when it doesn't.
+    match_mode: Literal["exact", "expand"] = "exact"
+    hard: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -53,6 +132,26 @@ class LLMOutput(BaseModel):
     intent: str
     logic: Literal["AND", "OR", "NOT"] = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    # v2-only (empty under v1): raw extraction buckets, resolved into
+    # `filters`-equivalent Filter objects by app/core/taxonomy.py, never
+    # consumed directly by validation.py/engine.py. `domain_hint` is
+    # deliberately NOT turned into a Filter yet -- the real candidate
+    # `domain` field stores 212 fine-grained subdomain strings ("FinTech",
+    # "Payments & FinTech Engineering"), while this is a coarse 14-category
+    # hint ("Finance") that often shares no substring with the real data at
+    # all (engine.py matches `domain` by substring) -- captured/logged for
+    # now rather than shipped as a silently-inert soft filter. See the
+    # migration plan's domain_hint scoping note for the follow-up.
+    structured: list[StructuredItem] = Field(default_factory=list)
+    tools: list[ToolItem] = Field(default_factory=list)
+    domain_hint: list[str] = Field(default_factory=list)
+    # A genuine cross-field "either requirement route A or route B" embedded
+    # alongside other AND'd requirements (see AlternativeGroup's docstring)
+    # -- e.g. "8+ years AND [Master's from a Tier-1 university OR 10+ years
+    # of experience]". Members carry ALREADY-RESOLVED field/operator/value
+    # (v1's shape) even under v2 -- see json_schema_v2.py's comment on why
+    # group leaves deliberately bypass the raw-span structured/tools layer.
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
     # Set true ONLY when NEW QUERY reads as a full standalone search that
     # doesn't build on CURRENT FILTERS at all (e.g. CURRENT FILTERS has
     # location+experience+skill and NEW QUERY is just "candidates in
@@ -134,25 +233,61 @@ class PatchStateRequest(BaseModel):
     session_id: str
     filters: list[Filter]
     logic: Literal["AND", "OR", "NOT"] = "AND"
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
 
 
 class Chip(BaseModel):
     label: str
     field: str
     skill: Optional[str] = None
+    # Mirrors the Filter it was rendered from (see Filter.hard) -- a real
+    # flag the UI can key off of (dashed border, different color, etc.),
+    # not just a text convention baked into the label string.
+    hard: bool = True
+
+
+class FilterChoice(BaseModel):
+    """One row of a "confirm" response -- a single filter the recruiter can
+    keep or drop, shown individually rather than folded into one bundled
+    yes/no sentence. `label` is `merge.chip_label(filter)` verbatim (never
+    hand-rolled) so the same "~" soft-preference convention and any future
+    hard/soft styling comes for free. `origin` distinguishes a filter
+    carried over from the active session ("existing") from one the new
+    query just introduced ("new") -- purely informational for the UI, not
+    used to decide `default_checked` (see FilterService's confirm-branch
+    docstring for why hard/soft doesn't change the default either)."""
+    filter: Filter
+    label: str
+    origin: Literal["existing", "new"]
+    default_checked: bool
 
 
 class FilterResponse(BaseModel):
-    status: Literal["ok", "clarify", "unsupported", "no_match", "error", "answer"]
+    status: Literal[
+        "ok", "clarify", "confirm", "domain_skill_pick",
+        "unsupported", "no_match", "error", "answer",
+    ]
     total: int = 0
     showing: int = 0
     logic: str = "AND"
     filters: list[Filter] = Field(default_factory=list)
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
     chips: list[Chip] = Field(default_factory=list)
     candidates: list[dict] = Field(default_factory=list)
     # clarify
     question: Optional[str] = None
     options: list[str] = Field(default_factory=list)
+    # confirm -- see FilterChoice and PendingConfirm
+    choices: list[FilterChoice] = Field(default_factory=list)
+    # domain_skill_pick -- see PendingDomainSkillPick. `domain_filter` is the
+    # domain/domain_experience filter the recruiter's query already named
+    # (not yet applied -- `filters`/`chips` above still reflect the OLD,
+    # pre-this-turn state, same convention as confirm/clarify); the
+    # recruiter checks zero or more of `skill_options` and submits the
+    # final [existing chips + domain_filter + optional skill filter] via
+    # the existing deterministic PATCH endpoint.
+    domain_filter: Optional[Filter] = None
+    skill_options: list[str] = Field(default_factory=list)
     # unsupported / error / no_match / answer
     message: Optional[str] = None
     suggestions: list[str] = Field(default_factory=list)
@@ -178,26 +313,65 @@ class PendingClarify(BaseModel):
     unit: Optional[str] = None
 
 
-class PendingCombine(BaseModel):
-    """A proposed filter combination awaiting yes/no confirmation before
-    being applied. Set when a new query introduces at least one genuinely
-    NEW field on top of an already-active, non-empty filter set (e.g.
-    active filter is "Mumbai", new query asks for "high tier college" --
-    a different field entirely) -- as opposed to updating a field already
-    present ("actually, Bangalore instead"), which still auto-replaces
-    without asking, or a query that reads as a full standalone search
-    (see LLMOutput.replace_all), which still replaces the whole set
-    without asking. Only the "silently stack an unrelated new requirement
-    onto the existing search" case is ambiguous enough to warrant a
-    confirmation -- the recruiter might have meant EITHER "Mumbai AND
-    high tier college" OR "actually, forget Mumbai, just high tier
-    college" and guessing either way risks a wrong result the recruiter
-    has no reason to expect.
+class PendingConfirm(BaseModel):
+    """Every filter the recruiter is being asked to individually keep or
+    drop, awaiting their reply, before a query is actually applied.
 
-    Holds the FULLY MERGED spec, ready to apply verbatim on "yes" -- no
-    LLM call needed to resolve the confirmation, same principle as
-    PendingClarify.value."""
-    spec: FilterSpec
+    Set whenever a new query would ADD or DROP a field on top of an
+    already-active, non-empty filter set (e.g. active filter is "Mumbai",
+    new query asks for "high tier college" -- a different field entirely)
+    -- as opposed to updating a field already present ("actually, Bangalore
+    instead"), which still auto-applies without asking, since nothing about
+    WHICH filters are active is in question there.
+
+    Superseded PendingCombine, which asked ONE bundled yes/no question
+    spanning every filter in the merged set ("Do you want candidates
+    matching fintech domain and python skill?"). Confirmed live that this
+    hides a real bug: a stale filter from an earlier, unrelated query
+    survived because it was bundled into a sentence the recruiter agreed to
+    without noticing it was in there. Granularity is the actual fix -- each
+    filter is its own row (see FilterChoice), not smarter guessing about
+    when to ask.
+
+    The recruiter's real answer is a set of checkboxes (each `FilterChoice`
+    carries `default_checked` as the pre-ticked suggestion), submitted via
+    the existing PATCH /ai/candidates/filter/state endpoint -- no LLM call
+    needed for that path at all. This pending state exists ONLY so a bare
+    "yes"/"no" typed in the chat box (rather than clicking checkboxes) still
+    resolves deterministically: "yes" applies every `default_checked`
+    filter verbatim, same principle as PendingClarify.value.
+
+    `alternative_groups` (see AlternativeGroup) carries this turn's new
+    group statement, if any, ALONGSIDE the flat-filter review above --
+    reviewing/dropping individual routes is explicitly out of scope for
+    now (a stated "either route" always auto-applies, same as any other
+    unreviewed field), this field exists only so a group statement isn't
+    silently LOST when a flat-filter change in the same turn also happens
+    to trigger this confirm step."""
+    choices: list[FilterChoice]
+    logic: Literal["AND", "OR", "NOT"] = "AND"
+    message: Optional[str] = None
+    alternative_groups: list[AlternativeGroup] = Field(default_factory=list)
+
+
+class PendingDomainSkillPick(BaseModel):
+    """A vague domain-only query ("I want a DevOps guy") named a practice
+    area but no specific tool -- rather than searching immediately (which
+    would just mean "anyone ever classified into this domain", the same
+    complaint that led to domain_experience existing at all), offer real,
+    data-grounded skill choices to narrow it first (see service.py's
+    _domain_skill_options: the curated tool taxonomy's list for that
+    practice area, intersected with skills that ACTUALLY appear among this
+    job's real candidates classified into it -- never a tool nobody in this
+    pool actually has).
+
+    Exists so a bare short reply typed in the chat box can still resolve
+    this deterministically, same principle as PendingClarify/PendingConfirm
+    -- the real, expected path is the recruiter checking boxes in the UI
+    and hitting Search, which submits straight to the existing
+    deterministic PATCH endpoint (no LLM call needed for that path)."""
+    domain_filter: Filter
+    skill_options: list[str]
     message: Optional[str] = None
 
 
@@ -227,10 +401,14 @@ class SessionState(BaseModel):
     # Same idea for CLARIFY: set whenever the LLM identified which field a
     # clarifying question was about (see LLMOutput.clarify_field).
     pending_clarify: Optional[PendingClarify] = None
-    # Set when a query introduces a genuinely new field on top of an
-    # already-active search, awaiting yes/no confirmation before combining
-    # -- see PendingCombine's docstring.
-    pending_combine: Optional[PendingCombine] = None
+    # Set when a query adds or drops a field on top of an already-active
+    # search, awaiting the recruiter's per-filter keep/drop confirmation
+    # -- see PendingConfirm's docstring.
+    pending_confirm: Optional[PendingConfirm] = None
+    # Set when a query named a domain/practice-area with no specific skill,
+    # awaiting the recruiter's optional skill narrowing -- see
+    # PendingDomainSkillPick's docstring.
+    pending_domain_skill_pick: Optional[PendingDomainSkillPick] = None
     # Recent real conversation turns (bounded, see service._append_history),
     # replayed to the LLM as actual prior chat messages on every call.
     history: list[ChatTurn] = Field(default_factory=list)

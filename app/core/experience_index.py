@@ -49,6 +49,22 @@ class IndexPaths:
         return self.manifest.is_file()
 
 
+def index_exists(directory: Path | str = INDEX_DIR) -> bool:
+    """Whether the experience index has been built at all -- a dedicated
+    function rather than callers constructing `IndexPaths(directory).exists()`
+    themselves, so a test needing to fake "index not built yet" (one
+    boolean) can monkeypatch this one function instead of the whole
+    `IndexPaths` class. `IndexPaths` backs several independent features now
+    (classification lookups, chunk/vector search) -- patching the class
+    itself to control this one check silently breaks whichever of those a
+    given test doesn't happen to also fake, depending on test order and
+    `@lru_cache` warm state elsewhere in the codebase (confirmed: exactly
+    this happened once `candidates.py` started calling
+    `classifications_by_candidate()`, which also goes through
+    `IndexPaths`, from inside candidate loading)."""
+    return IndexPaths(directory).exists()
+
+
 # ---------------------------------------------------------------------------
 # WRITE
 # ---------------------------------------------------------------------------
@@ -162,12 +178,9 @@ def search(query: str, top_k: int = 10, directory: Path | str = INDEX_DIR,
     is what makes combining the two (semantic recall, then structured
     filtering on `classification`) meaningful rather than circular.
     """
-    chunks = load_chunks(directory)
-    vectors = load_vectors(directory)
-    if not chunks or vectors.size == 0:
+    chunks, scores = _score_chunks(query, directory)
+    if not chunks:
         return []
-    query_vec = l2_normalize(default_cache().embed([query]))[0]
-    scores = l2_normalize(vectors) @ query_vec
     order = np.argsort(-scores)[:top_k]
     labels = load_classifications(directory) if with_classification else {}
     results = []
@@ -176,5 +189,77 @@ def search(query: str, top_k: int = 10, directory: Path | str = INDEX_DIR,
         row["score"] = round(float(scores[int(i)]), 4)
         if with_classification:
             row["classification"] = labels.get(row["experience_id"], {}).get("classification")
+        results.append(row)
+    return results
+
+
+def _score_chunks(query: str, directory: Path | str = INDEX_DIR) -> tuple[list[dict], np.ndarray]:
+    """Every chunk's cosine similarity to `query`, unranked and untruncated
+    -- the shared step behind both `search()` and `search_candidates()`.
+    Kept separate so restricting to a candidate pool (below) happens BEFORE
+    any top-k cut, not after -- cutting first would let irrelevant chunks
+    from outside the pool crowd out a real hit inside it."""
+    chunks = load_chunks(directory)
+    vectors = load_vectors(directory)
+    if not chunks or vectors.size == 0:
+        return [], np.zeros(0)
+    query_vec = l2_normalize(default_cache().embed([query]))[0]
+    scores = l2_normalize(vectors) @ query_vec
+    return chunks, scores
+
+
+def search_candidates(
+    query: str, candidate_ids, top_k: int = 20, directory: Path | str = INDEX_DIR,
+) -> list[dict]:
+    """Semantic search restricted to a specific candidate pool (e.g. one
+    job's matched candidates, optionally already narrowed by other active
+    filters), aggregated to ONE result per candidate -- their single
+    best-matching experience chunk, not every chunk that scored above the
+    rest.
+
+    This is the primitive an experience-search filter should use instead of
+    `search(query, top_k=200)` followed by filtering the results down to a
+    job's pool: that ranks the WHOLE corpus first and only THEN restricts,
+    so a small job's real best match can be pushed out of the global top-k
+    by closer-scoring chunks belonging to candidates entirely outside the
+    pool. Empirically this hasn't misfired on the current dataset at the
+    current similarity floor (every real match scoring above it also
+    ranked within the top 200 corpus-wide, checked across pools as small as
+    one candidate) -- but that's a property of today's data and threshold,
+    not a guarantee, and it silently degrades instead of erroring if either
+    changes. Restrict-then-rank has no such failure mode: the candidate
+    pool is applied before any cut, so the true best-in-pool match is what
+    gets scored, always.
+
+    Returns [{candidate_id, experience_id, chunk_id, text, score,
+    classification}, ...], sorted best-first, at most one row per
+    candidate_id.
+    """
+    ids = candidate_ids if isinstance(candidate_ids, (set, frozenset)) else set(candidate_ids)
+    if not ids:
+        return []
+    chunks, scores = _score_chunks(query, directory)
+    if not chunks:
+        return []
+
+    best_per_candidate: dict[str, int] = {}
+    for i, chunk in enumerate(chunks):
+        cid = chunk.get("candidate_id")
+        if cid not in ids:
+            continue
+        current = best_per_candidate.get(cid)
+        if current is None or scores[i] > scores[current]:
+            best_per_candidate[cid] = i
+
+    if not best_per_candidate:
+        return []
+
+    labels = load_classifications(directory)
+    ranked = sorted(best_per_candidate.items(), key=lambda kv: -scores[kv[1]])[:top_k]
+    results = []
+    for cid, i in ranked:
+        row = dict(chunks[i])
+        row["score"] = round(float(scores[i]), 4)
+        row["classification"] = labels.get(row["experience_id"], {}).get("classification")
         results.append(row)
     return results

@@ -26,16 +26,16 @@ Query → LLM (NL→JSON) → merge w/ session → validate → engine → resul
 Install [Ollama](https://ollama.com), then pull the recommended model:
 
 ```bash
-ollama pull qwen2.5:1.5b
+ollama pull qwen3:4b
 ```
 
 **Design target is `qwen3:8b`** -- the prompt in `app/llm/prompt.py` (rules +
 few-shot examples) is written for an 8B-class instruct model's reasoning, not
-for `qwen2.5:1.5b`. Set `MODEL=qwen3:8b`, but only on hardware with a GPU or
+for `qwen3:4b`. Set `MODEL=qwen3:8b`, but only on hardware with a GPU or
 enough RAM/CPU to serve it within a few seconds. On a laptop-class CPU with no
 GPU (confirmed here: 8GB RAM, no discrete GPU) an 8B model can take minutes
-per query -- not usable for an interactive search bar, so `qwen2.5:1.5b` is
-this repo's *dev-only* default, not a second design target. It will misparse
+per query -- not usable for an interactive search bar, so `qwen3:4b` is this
+repo's *practical* default, not a second design target. It will misparse
 phrasing an 8B model generalizes to correctly (see `prompt.py`'s
 `MODEL_CHOICE_NOTE` for a concrete example and free-model alternatives worth
 comparing: `llama3.1:8b-instruct`, `gemma2:9b`).
@@ -177,13 +177,16 @@ signals, which is the point of storing them apart.
 | var | default |
 |---|---|
 | `OLLAMA_URL` | `http://localhost:11434` |
-| `MODEL` | `qwen2.5:1.5b` (dev-only; design target is `qwen3:8b` on GPU/high-RAM hardware) |
-| `LLM_TIMEOUT` | `30` (bump to ~60 when running the 8B target) |
+| `MODEL` | `qwen3:4b` (practical default; design target is `qwen3:8b` on GPU/high-RAM hardware) |
+| `LLM_TIMEOUT` | `240` (confirmed live: a full round-trip at the correct NUM_CTX took 204s on CPU-only/8GB; bump down to ~60 on GPU/8B-capable hardware) |
 | `LLM_MAX_RETRIES` | `2` |
-| `NUM_CTX` | `4096` |
+| `NUM_CTX` | `12288` (v1 prompt alone is ~9,400 tokens; a smaller window silently truncates it) |
+| `SKILL_VERIFY_TIMEOUT` | `400` (skill_verify.py runs with thinking ON -- required for correctness, confirmed think:False rubber-stamps every candidate as a match) |
+| `SKILL_EMBED_MODEL` | `all-minilm` (skill-similarity matching only; separate from `EMBED_MODEL`/`EXPERIENCE_EMBED_MODEL` below) |
+| `SEMANTIC_MIN_SIMILARITY` | `0.48` (calibrated for `SKILL_EMBED_MODEL`'s scale -- re-tune if that model changes) |
 | `PARSED_RESUMES_PATH` | `rebee_client_rebeeai.parsedresumes.json` (repo root) |
 | `JD_MATCH_RESULTS_PATH` | `rebee_client_rebeeai.jdmatchresults.json` (repo root) |
-| `MASTER_UNIVERSITIES_PATH` | `master_universities.csv` (repo root) |
+| `MASTER_UNIVERSITIES_PATH` | `master_universities_simple.csv` (repo root) |
 | `COMPANY_RANKS_PATH` | `company_ranks.json` (repo root) |
 | `LOCATION_JSON_PATH` | `Location.json` (repo root) |
 | `SESSION_TTL` | `3600` |

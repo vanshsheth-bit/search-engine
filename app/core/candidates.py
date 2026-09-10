@@ -17,6 +17,7 @@ Replace this module with your real DB / matching-service query in production.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -24,7 +25,7 @@ from functools import lru_cache
 
 from app.core.company_type import company_types_for
 from app.core.experience_index import classifications_by_candidate
-from app.core.skill_taxonomy import canonicalize
+from app.core.skill_taxonomy import canonicalize, is_known_tool
 from app.core.vocabulary import EDUCATION_RANK_LABELS, education_rank
 
 _ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
@@ -38,7 +39,7 @@ _JD_MATCH_RESULTS_PATH = os.getenv(
 )
 _MASTER_UNIVERSITIES_PATH = os.getenv(
     "MASTER_UNIVERSITIES_PATH",
-    os.path.join(_ROOT, "master_universities.csv"),
+    os.path.join(_ROOT, "master_universities_simple.csv"),
 )
 _COMPANY_RANKS_PATH = os.getenv(
     "COMPANY_RANKS_PATH",
@@ -47,6 +48,16 @@ _COMPANY_RANKS_PATH = os.getenv(
 _LOCATION_JSON_PATH = os.getenv(
     "LOCATION_JSON_PATH",
     os.path.join(_ROOT, "Location.json"),
+)
+# Disk memo for _load_company_ranks_data's one-time scan of the ~900MB
+# company_ranks.json (measured: ~64s of a ~97s cold start -- 7.2M json.loads
+# plus 21M regex substitutions, to keep a few thousand matching rows). Same
+# on-disk-cache convention as embeddings.py's EMBED_CACHE_DIR; gitignored,
+# since which companies it contains is derived from the real resume data and
+# inherits its PII the same way experience_index/ does.
+_COMPANY_RANKS_CACHE_PATH = os.getenv(
+    "COMPANY_RANKS_CACHE_PATH",
+    os.path.join(_ROOT, ".company_ranks_cache.json"),
 )
 
 # Location normalisation: primarily a real lookup against Location.json
@@ -242,7 +253,7 @@ def _highest_education(education: list[dict]) -> str | None:
 
 # College-tier matching: resumes carry messy free-text university names
 # ("KJ Somaiya School of Engineering, Mumbai, India") that rarely match
-# master_universities.csv's canonical names ("SOMAIYA VIDYAVIHAR UNIVERSITY")
+# master_universities_simple.csv's canonical names ("SOMAIYA VIDYAVIHAR UNIVERSITY")
 # exactly. Best-effort fuzzy match: try the full normalised name first, then
 # fall back to a distinctive-keyword overlap. Not a geocoder-grade matcher --
 # returns None (no tier) rather than guessing when nothing lines up.
@@ -381,6 +392,60 @@ def _needed_company_names(raw_records: list[dict]) -> set[str]:
     return names
 
 
+def _company_ranks_fingerprint(needed: set[str]) -> str:
+    """Identifies the exact inputs a cached result was built from: the
+    source file's identity (path/size/mtime) AND the set of company names
+    actually looked for, since that set (derived from the resume data)
+    decides which rows are kept. If either changes, the cache is stale and
+    is recomputed rather than trusted."""
+    st = os.stat(_COMPANY_RANKS_PATH)
+    digest = hashlib.sha256(
+        "\n".join(sorted(needed)).encode("utf-8")
+    ).hexdigest()
+    return f"{os.path.abspath(_COMPANY_RANKS_PATH)}|{st.st_size}|{st.st_mtime_ns}|{digest}"
+
+
+def _read_company_ranks_cache(fingerprint: str) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Cached (tiers, industries) if one was written for these exact inputs.
+    Any problem at all -- missing file, unreadable, malformed, fingerprint
+    mismatch -- returns None so the caller just does the real scan: this is
+    purely a speed-up, never a source of truth, and must never be able to
+    break or silently alter a real result."""
+    try:
+        with open(_COMPANY_RANKS_CACHE_PATH, "r", encoding="utf-8") as fh:
+            blob = json.load(fh)
+        if blob.get("fingerprint") != fingerprint:
+            return None
+        tiers, industries = blob["tiers"], blob["industries"]
+        if not isinstance(tiers, dict) or not isinstance(industries, dict):
+            return None
+        return tiers, industries
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _write_company_ranks_cache(
+    fingerprint: str, tiers: dict[str, str], industries: dict[str, str],
+) -> None:
+    """Best-effort: a read-only/full disk just means the next cold start
+    pays the full scan again, which is exactly the pre-cache behaviour.
+    Written to a temp file and renamed so a crash mid-write can't leave a
+    truncated file that later reads as valid-but-wrong."""
+    tmp = f"{_COMPANY_RANKS_CACHE_PATH}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"fingerprint": fingerprint, "tiers": tiers, "industries": industries},
+                fh,
+            )
+        os.replace(tmp, _COMPANY_RANKS_CACHE_PATH)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 @lru_cache(maxsize=1)
 def _load_company_ranks_data() -> tuple[dict[str, str], dict[str, str]]:
     """Streams company_ranks.json (~900MB) ONCE, returns (tier map, industry
@@ -397,6 +462,12 @@ def _load_company_ranks_data() -> tuple[dict[str, str], dict[str, str]]:
     industries: dict[str, str] = {}
     if not needed or not os.path.isfile(_COMPANY_RANKS_PATH):
         return tiers, industries
+
+    fingerprint = _company_ranks_fingerprint(needed)
+    cached = _read_company_ranks_cache(fingerprint)
+    if cached is not None:
+        return cached
+
     with open(_COMPANY_RANKS_PATH, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -418,6 +489,7 @@ def _load_company_ranks_data() -> tuple[dict[str, str], dict[str, str]]:
             industry = d.get("industry")
             if isinstance(industry, str) and industry.strip():
                 industries.setdefault(norm, industry.strip().lower())
+    _write_company_ranks_cache(fingerprint, tiers, industries)
     return tiers, industries
 
 
@@ -490,6 +562,130 @@ def _company_tier_for(company_names: list[str]) -> str | None:
     return best_tier
 
 
+# `is_known_tool` alone isn't a strong enough filter for TEXT matching --
+# some real, legitimately-known taxonomy tool names are ALSO common English
+# words/verbs, and prose overwhelmingly uses them in the generic sense, not
+# the tool sense. Found via a dataset-wide audit, not guesswork: for every
+# single-word known tool name mentioned in at least 15 resumes' job
+# descriptions, checked what fraction of THOSE resumes also separately list
+# that name (canonicalized) as one of their own skills -- a genuine tool
+# should correlate strongly (a person whose bullet names a specific tool
+# overwhelmingly also lists it as a skill; SQL/Python/AWS/Splunk/Azure/REST
+# all measured 95-100% this way), while a word only coincidentally also a
+# tool name does not (all of these measured 0-10%). "Excel" is the
+# non-obvious one this caught: 62 resumes use the word "excel" in a job
+# description, ZERO of them also list "Excel" as a skill -- overwhelmingly
+# the verb ("excelled in..."), not the spreadsheet, in this corpus's prose.
+# "R"/"C" are real languages but single letters collide with unrelated
+# capitalized usage (grades, initials, "R&D") far more than genuine mentions
+# (10%/5% correlation). Scoped to skill-YEARS computation only -- these stay
+# fully valid, unaffected skills for `is_known_tool`/plain presence matching
+# elsewhere; this list only blocks trusting a prose MENTION of the word as
+# evidence of time spent on it.
+_AMBIGUOUS_FOR_YEARS_TEXT_MATCH = {
+    "accelerate", "applied", "backlog", "c", "close", "datasets", "deputy",
+    "excel", "fast", "fellow", "front", "gap", "go", "guidance", "impact",
+    "included", "increase", "metal", "milligram", "pigment", "planning",
+    "processing", "r", "range", "resolve", "responsive", "safe", "sops",
+    "speed", "sprint", "ssis", "timely", "unit", "uv", "visit",
+}
+
+# Cached per term -- the same skill/phrase string recurs across thousands of
+# candidates, and compiling a regex is the expensive part, not matching it.
+# Public (no leading underscore) -- also reused by service.py for the
+# untracked-domain-phrase experience-text search (see
+# service._experience_text_matches), same word-mention logic, just applied
+# to an arbitrary query phrase instead of a taxonomy-known skill name.
+#
+# BOUNDED deliberately (was an unbounded dict): once service.py started
+# calling this with arbitrary RECRUITER-typed phrases rather than only
+# taxonomy skill names, an unbounded cache became unbounded growth keyed by
+# user input on a long-running server -- every distinct phrase ever searched
+# retained forever. 2048 is far more than any single request touches while
+# still keeping the hit rate that matters (the same term reused across
+# thousands of candidates within one request).
+@lru_cache(maxsize=2048)
+def mention_pattern(term: str) -> re.Pattern:
+    if re.fullmatch(r"[\w ]+", term):
+        return re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+    # A name with its own punctuation ("C++", "C#", "Node.js") -- `\b`
+    # doesn't behave sanely around those, so fall back to a plain substring
+    # match instead.
+    return re.compile(re.escape(term), re.IGNORECASE)
+
+
+def _skill_years_from_experience(
+    skills: list[str], experience: list[dict],
+) -> dict[str, dict]:
+    """{skill name: {"years": total_or_None}} -- sums each experience entry's
+    own `duration_years` (the resume's real computed job length) across every
+    job whose OWN text (position + description) mentions that skill by name,
+    deterministic keyword matching, no LLM/classifier call. The only per-
+    skill duration signal that exists in this dataset -- there is no
+    structured per-job tech-stack field, only free-text description.
+
+    FIRST attempt at this ran it over every listed skill unconditionally and
+    was reverted after finding real false positives: this dataset's parsed
+    `skills` field is sometimes noisy (generic English words like "route",
+    "safety", "time" show up as "skills" for some resumes), and those
+    fabricated plausible-looking precise numbers ("safety: 5.9 years") purely
+    because common words recur in unrelated prose. Restricting to
+    `is_known_tool(skill)` (the SAME curated taxonomy used for skill
+    expansion/fuzzy matching elsewhere) fixes that almost entirely -- none of
+    those junk words are recognized tools -- at the cost of never computing a
+    number for a skill the taxonomy doesn't know (stays a plain, undated
+    membership fact via the flat-list-equivalent {"years": None}). A
+    residual subset of REAL taxonomy tool names are ALSO common English
+    words/verbs ("Excel", "Go", "Planning", single letters "R"/"C", ...) and
+    needed a second, separately-derived exclusion --
+    _AMBIGUOUS_FOR_YEARS_TEXT_MATCH, see its own comment for the dataset-wide
+    audit that produced it.
+
+    A SECOND worry -- that specific tool names simply don't recur in a job's
+    own bullet text at all -- turned out to be an artifact of checking only
+    one job's small (8-candidate) matched pool, not a real dataset-wide
+    pattern: checked across the full ~9,700-resume dataset, of candidates who
+    list "Python" as a skill, 65% have "Python" literally named in at least
+    one of their own job descriptions (Kubernetes 89%, AWS 70%, SQL 41%,
+    React 24%, Java 18% -- real, uneven, but far from "essentially never").
+    So a skill counts toward a job's years ONLY if that job's own bullet text
+    happens to name it -- a candidate who genuinely used a skill on a job but
+    never typed its name into that particular bullet is under-counted for
+    that job, and a skill named less often in prose (Java, React) will
+    under-match more than one named often (Kubernetes, AWS). Real, accepted
+    limitation of working from resume prose instead of a structured tech-
+    stack field, same category of gap as skill_taxonomy's own alias
+    matching.
+
+    A listed-and-known skill that never appears in ANY job's own text gets
+    {"years": None} -- "has it, can't say for how long", not zero -- so a
+    numeric skill_experience filter correctly treats it as unanswerable
+    (engine.matches_filter's None-means-absent handling) while a plain
+    `skill` presence filter is completely unaffected (that only ever checks
+    the dict's keys, see engine._skills_map)."""
+    out: dict[str, dict] = {}
+    for skill in skills:
+        if (
+            not is_known_tool(skill, fuzzy=False)
+            or skill.lower() in _AMBIGUOUS_FOR_YEARS_TEXT_MATCH
+        ):
+            out[skill] = {"years": None}
+            continue
+        pattern = mention_pattern(skill)
+        total = 0.0
+        matched_any = False
+        for entry in experience:
+            duration = entry.get("duration_years")
+            if duration is None:
+                continue
+            text = f"{entry.get('position') or ''} {entry.get('description') or ''}"
+            if pattern.search(text):
+                total += float(duration)
+                matched_any = True
+        out[skill] = {"years": round(total, 2) if matched_any else None}
+    return out
+
+
 def _current_location(personal: dict, experience: list[dict]) -> str | None:
     # Prefer the resume's own stated location over one inferred from job
     # history -- more direct, less guesswork.
@@ -518,7 +714,20 @@ def _adapt_resume(raw: dict) -> dict:
     # the exact string "React" matched fine -- same skill, same person in
     # substance, different outcome purely from resume formatting.
     raw_skills = raw.get("skillsNormalized") or raw.get("skills") or []
-    skills = list(dict.fromkeys(canonicalize(s) for s in raw_skills))
+    # fuzzy=False: alias/noise-word resolution only, never typo "correction"
+    # -- see skill_taxonomy._resolve_canonical for why stored resume data
+    # must not be fuzzily rewritten the way a recruiter's typed query can be
+    # (and what it costs to try).
+    skill_names = list(dict.fromkeys(canonicalize(s, fuzzy=False) for s in raw_skills))
+    # {name: {"years": N or None}} -- real per-skill duration computed from
+    # this candidate's own job history text where possible -- see
+    # _skill_years_from_experience. engine._skills_map/skill_taxonomy.
+    # skill_names_of both already accept this shape interchangeably with a
+    # flat list, so every existing plain-`skill` consumer is unaffected;
+    # only skill_experience filtering (previously always "unanswerable",
+    # see service._skill_years_available) newly has real data for known
+    # tools where the resume's own text supports it.
+    skills = _skill_years_from_experience(skill_names, experience)
     universities = list(dict.fromkeys(
         (e.get("university") or "").strip() for e in education if e.get("university")
     ))
@@ -569,13 +778,54 @@ def _adapt_resume(raw: dict) -> dict:
         # _load_candidate_domains. Empty/absent if the experience index
         # hasn't been built for this dataset yet.
         "domain": _load_candidate_domains().get(raw.get("processId"), []),
+        # {subdomain: total_years} -- e.g. a candidate with 4 real jobs (3y
+        # SDE, 2y DevOps, 4y SDE, 1y SDE) gets {"...": 8.0, "DevOps": 2.0},
+        # not their 10-year total career length for either. Powers
+        # "domain_experience" filters (see engine.py); empty/absent under
+        # the same conditions as "domain" above. See
+        # _load_candidate_domain_years.
+        "domain_years": _load_candidate_domain_years().get(raw.get("processId"), {}),
         "skills": skills,
         "job_title": job_titles,
         "certification": certifications,
         "employment_gap_months": longest_gap_months,
     }
     # Drop keys with no data rather than asserting a false "field is present".
-    return {k: v for k, v in candidate.items() if v not in (None, [], "")}
+    return {k: v for k, v in candidate.items() if v not in (None, [], "", {})}
+
+
+@lru_cache(maxsize=1)
+def experience_texts_by_candidate() -> dict[str, str]:
+    """{candidate id: that person's position+description text across every
+    job, concatenated} -- the search index behind
+    service._experience_text_matches, which looks for an arbitrary phrase
+    this dataset has no tracked field for at all (e.g. "supply chain
+    platform" -- not a known tool, not one of the 207 real subdomain
+    categories). Same deterministic keyword-search idea as
+    _skill_years_from_experience, over the full text instead of one known
+    skill name at a time.
+
+    A SIDE INDEX rather than a field on the candidate dict, deliberately.
+    It was briefly the latter, and that leaked: candidate dicts are handed
+    straight to API responses and persisted into session state, so every
+    response carried the full job-history prose of every candidate
+    (measured: 647KB vs 216KB for one real 99-candidate result) and every
+    stored session retained it too -- for a field the UI never reads and
+    only the matcher needs. Keeping it out of the candidate dict entirely
+    makes that impossible by construction, rather than relying on
+    remembering to strip it at each of several boundaries."""
+    out: dict[str, str] = {}
+    for raw in _load_raw_resumes():
+        pid = raw.get("processId")
+        if not pid:
+            continue
+        text = " ".join(
+            f"{e.get('position') or ''} {e.get('description') or ''}"
+            for e in (raw.get("experience") or [])
+        ).strip()
+        if text:
+            out[pid] = text
+    return out
 
 
 @lru_cache(maxsize=1)
@@ -626,6 +876,42 @@ def _load_candidate_domains() -> dict[str, list[str]]:
         if subdomains:
             domains[candidate_id] = sorted(subdomains)
     return domains
+
+
+@lru_cache(maxsize=1)
+def _load_candidate_domain_years() -> dict[str, dict[str, float]]:
+    """{candidate_id: {subdomain: total_years}} -- real per-experience
+    duration_years (the actual resume dates, already computed and stored on
+    every classifications.jsonl row -- see experience_classifier.py) SUMMED
+    across every experience entry classified into that subdomain for that
+    candidate.
+
+    Real, reported gap this closes: a "domain contains DevOps" filter only
+    ever answered "has this person EVER done DevOps work", using their
+    TOTAL career length for anything numeric -- so a candidate with 4 real
+    jobs (3y as an SDE, 2y in DevOps, 4y as an SDE, 1y as an SDE) looked
+    like they had 10 years of DevOps experience, not the real 2. This sums
+    durations PER subdomain instead, so "2+ years of DevOps" can actually
+    be verified against real per-experience duration data -- unlike
+    skill_experience (see engine.py), which stays structurally unanswerable
+    because no per-SKILL duration data exists anywhere in this dataset;
+    per-EXPERIENCE duration (and its classification) both already do."""
+    by_candidate = classifications_by_candidate()
+    years: dict[str, dict[str, float]] = {}
+    for candidate_id, rows in by_candidate.items():
+        acc: dict[str, float] = {}
+        for row in rows:
+            classification = row.get("classification")
+            if not isinstance(classification, dict):
+                continue
+            subdomain = classification.get("subdomain")
+            duration = row.get("duration_years")
+            if not subdomain or duration is None:
+                continue
+            acc[subdomain] = acc.get(subdomain, 0.0) + float(duration)
+        if acc:
+            years[candidate_id] = {k: round(v, 2) for k, v in acc.items()}
+    return years
 
 
 # Caps keep a single well-attested company's evidence from blowing up prompt

@@ -23,11 +23,23 @@ class SessionStore:
     def clear(self, session_id: str, job_id: str) -> None: ...
 
 
+# How often (seconds) `set` sweeps the whole store for expired entries.
+# Without a sweep, expiry is purely lazy -- an entry is only ever dropped
+# when that SAME key is looked up again -- so a session that is created and
+# then abandoned (the common case: one search, browser closed) is retained
+# for the life of the process. That is not just a stale key: each entry
+# holds a full SessionState including `last_candidates`, i.e. every
+# candidate dict that was on screen, so abandoned sessions accumulate real
+# memory indefinitely on a long-running server.
+_SWEEP_INTERVAL_SECONDS = 60
+
+
 class InMemorySessionStore(SessionStore):
     def __init__(self, ttl: Optional[int] = None) -> None:
         self._ttl = ttl or settings.session_ttl
         self._data: dict[str, tuple[float, SessionState]] = {}
         self._lock = threading.Lock()
+        self._last_sweep = time.time()
 
     @staticmethod
     def _key(session_id: str, job_id: str) -> str:
@@ -35,6 +47,17 @@ class InMemorySessionStore(SessionStore):
 
     def _expired(self, ts: float) -> bool:
         return (time.time() - ts) > self._ttl
+
+    def _sweep_if_due(self, now: float) -> None:
+        """Drop every expired entry, at most once per _SWEEP_INTERVAL_SECONDS.
+        Caller must hold the lock. Throttled rather than run on every write
+        because it is O(number of live sessions) and buys nothing when run
+        more often than entries can plausibly expire."""
+        if now - self._last_sweep < _SWEEP_INTERVAL_SECONDS:
+            return
+        self._last_sweep = now
+        for key in [k for k, (ts, _) in self._data.items() if self._expired(ts)]:
+            del self._data[key]
 
     def get(self, session_id: str, job_id: str) -> SessionState:
         key = self._key(session_id, job_id)
@@ -47,8 +70,10 @@ class InMemorySessionStore(SessionStore):
 
     def set(self, session_id: str, job_id: str, state: SessionState) -> None:
         key = self._key(session_id, job_id)
+        now = time.time()
         with self._lock:
-            self._data[key] = (time.time(), state.model_copy(deep=True))
+            self._sweep_if_due(now)
+            self._data[key] = (now, state.model_copy(deep=True))
 
     def clear(self, session_id: str, job_id: str) -> None:
         with self._lock:

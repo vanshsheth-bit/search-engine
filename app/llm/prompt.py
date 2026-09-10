@@ -8,19 +8,19 @@ might use. The FEW_SHOTS exist to reinforce the rules with concrete
 examples (still useful at 8B -- few-shot examples help any model), not as a
 lookup table the model is expected to pattern-match against verbatim.
 
-A smaller model (e.g. this project's qwen2.5:1.5b dev fallback, used only
-because this dev machine can't run an 8B model at a usable speed) will
-reliably follow only the exact patterns spelled out below and can still
-misparse phrasing an 8B model would generalize to correctly -- e.g. "good
-universities" got parsed as a literal university named "good" on the 1.5B
-model before validation.py's GENERIC_FILLER_WORDS check caught it. That
-check (and the rest of validation.py) stays regardless of model size --
+A smaller model (this project's practical default is qwen3:4b, used because
+this dev machine can't run an 8B model at a usable speed -- see MODEL in
+config.py) will reliably follow only the exact patterns spelled out below
+and can still misparse phrasing an 8B model would generalize to correctly --
+e.g. "good universities" got parsed as a literal university named "good" on
+a smaller model before validation.py's GENERIC_FILLER_WORDS check caught it.
+That check (and the rest of validation.py) stays regardless of model size --
 it's real defense-in-depth, not a crutch specific to the weak model -- but
 don't read every rule/example added below as "the model can't reason, so
 spell out every case." Most of them exist to lock in correct behavior
 across ANY model, including 8B+; only patch a *new* one-off example for a
 failure actually reproduced on the target 8B model, not preemptively for
-the dev fallback.
+the smaller default.
 
 MODEL_CHOICE_NOTE: qwen3:8b is the current pick -- Qwen's 2.5/3 series is
 particularly well-regarded for schema-constrained JSON/function-calling
@@ -74,6 +74,22 @@ FEW_SHOTS = [
                       "skill": "Python", "value": 5}]},
     ),
     (
+        # Confirmed live failure on qwen3:4b: this exact query ("N years of
+        # exp IN <skill>", not "N+ years of <skill> experience" like the
+        # example directly above) got emitted as TWO filters --
+        # {"experience","gte",3} + {"skill","contains","Java"} -- instead of
+        # one skill_experience filter. That's a materially different
+        # (wrong) query: it matches anyone with 3+ years of career AND Java
+        # anywhere on their resume, not someone with 3 years IN Java
+        # specifically. Same rule as above, different surface phrasing --
+        # added because the model didn't generalize from the Python example
+        # to this wording on its own.
+        "CURRENT FILTERS: []\nNEW QUERY: guy with 3 years of exp in java",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill_experience", "operator": "gte",
+                      "skill": "Java", "value": 3}]},
+    ),
+    (
         "CURRENT FILTERS: []\nNEW QUERY: Candidates in Mumbai with 5+ years of experience.",
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "location", "operator": "equals", "value": "Mumbai"},
@@ -121,10 +137,28 @@ FEW_SHOTS = [
                                 "Jenkins", "Ansible", "CI/CD"]}]},
     ),
     (
+        # SAME field ("skill" either way) -> one "in" filter, not logic
+        # "OR" with two separate filters (see rule 4) -- the OR-with-
+        # separate-filters shape is only for a genuine cross-field
+        # alternative with nothing else to AND it against.
         "CURRENT FILTERS: []\nNEW QUERY: Candidates who have either AWS or Azure.",
-        {"intent": "FILTER_CANDIDATES", "logic": "OR",
-         "filters": [{"field": "skill", "operator": "contains", "value": "AWS"},
-                     {"field": "skill", "operator": "contains", "value": "Azure"}]},
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill", "operator": "in", "value": ["AWS", "Azure"]}]},
+    ),
+    (
+        # Cross-field alternative ALONGSIDE another AND'd requirement (rule
+        # 4's third case) -> alternative_groups, not top-level logic "OR" --
+        # "OR" here would wrongly make the Python requirement optional too.
+        "CURRENT FILTERS: []\nNEW QUERY: At least 4 years of Python, and either "
+        "a master's from a tier-1 university or 10+ years of total experience.",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "skill_experience", "operator": "gte",
+                      "skill": "Python", "value": 4}],
+         "alternative_groups": [
+             {"filters": [{"field": "education", "operator": "gte", "value": "Master"},
+                          {"field": "college_tier", "operator": "gte", "value": "High"}]},
+             {"filters": [{"field": "experience", "operator": "gte", "value": 10}]},
+         ]},
     ),
     (
         "CURRENT FILTERS: []\nNEW QUERY: Exclude candidates who don't have Kubernetes.",
@@ -223,20 +257,16 @@ FEW_SHOTS = [
          "clarify_field": "experience", "clarify_operator": "gte"},
     ),
     (
-        # Confirmed live: "mid level" got silently converted to a guessed
-        # "experience lte 5" with no question asked, in a test where
-        # "senior"/"experienced" correctly asked first every time. Same
-        # rule, same forbidden-guessing logic -- "mid level"/"mid-level" is
-        # exactly as vague as "senior" or "experienced" (could mean a 3-year
-        # floor to one recruiter, 5 to another) and must CLARIFY too. Ask
-        # for a single minimum, same shape as the "experienced" example
-        # above -- not a two-sided range, which isn't resolvable into one
-        # gte/lte filter anyway.
+        # Unlike "experienced" above (a genuinely undefined amount), a named
+        # LEVEL word ("fresher"/"junior"/"mid level"/"senior"/"lead"/
+        # "principal") has a real, defined system meaning now (see rule 6's
+        # exception below) -- it's a classification, not a guess, so this is
+        # NOT a CLARIFY case. Emit the level word as-is in a "seniority"
+        # filter; a deterministic backend step resolves it into a real years
+        # range and job-title check.
         "CURRENT FILTERS: []\nNEW QUERY: Mid level software developer.",
-        {"intent": "CLARIFY",
-         "question": "What minimum years of experience counts as \"mid level\" here?",
-         "options": ["2+ years", "3+ years", "5+ years"],
-         "clarify_field": "experience", "clarify_operator": "gte"},
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "seniority", "operator": "equals", "value": "mid level"}]},
     ),
     (
         # Confirm-style CLARIFY: the recruiter already typed an ambiguous
@@ -319,6 +349,28 @@ FEW_SHOTS = [
         "CURRENT FILTERS: []\nNEW QUERY: Not a services company, please.",
         {"intent": "FILTER_CANDIDATES", "logic": "AND",
          "filters": [{"field": "company_type", "operator": "not_in", "value": ["Service"]}]},
+    ),
+    (
+        # CONFIRMED LIVE FAILURE, reproduced 100% (3/3 runs): with a
+        # NON-EMPTY CURRENT FILTERS list, the model flipped a POSITIVE
+        # "wants service-based" query to "not_in" -- as if "not a services
+        # company" (the example directly above) had been asked instead --
+        # while the exact same query with an EMPTY CURRENT FILTERS
+        # correctly used "in". Not specific to which field was already
+        # active (reproduced with an existing skill filter AND separately
+        # with an existing location filter) -- purely "is CURRENT FILTERS
+        # non-empty at all" that triggered the flip, apparently pattern-
+        # matching toward the negative example above once other filters
+        # were already in play. Added with a non-empty CURRENT FILTERS
+        # specifically to break that association. Per the merge
+        # convention (see the "also add Java" example above), only the NEW
+        # filter is emitted -- replace_all stays false (default) and the
+        # existing location filter survives via merge, not by being
+        # re-listed here.
+        "CURRENT FILTERS: [{\"field\": \"location\", \"operator\": \"equals\", "
+        "\"value\": \"Mumbai\"}]\nNEW QUERY: give me guy who has worked in service base company",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "company_type", "operator": "in", "value": ["Service"]}]},
     ),
     (
         # Confirmed live: earlier, "product-based" correctly gave
@@ -602,7 +654,31 @@ RULES:
    ("knows Python", "has AWS") -- those stay a plain "contains" with that
    one value; only expand a genuine umbrella concept, never a specific
    product name.
-4. "either A or B" -> logic "OR" with one filter per option.
+4. "either A or B" is handled differently depending on whether A/B are the
+   SAME field or genuinely DIFFERENT fields:
+   - SAME field (e.g. "Kubernetes or Terraform", "fintech, banking, or
+     payments", "senior or lead") -> ONE filter, operator "in", "value" is
+     the array of named options. Do NOT use logic "OR" with one filter per
+     option here -- that would wrongly turn every OTHER AND'd requirement in
+     the same query into an optional alternative too.
+     Right: {{"field":"skill","operator":"in","value":["Kubernetes","Terraform"]}}
+     Wrong: logic "OR" with two separate {{"field":"skill",...}} filters.
+   - DIFFERENT fields, and the "either...or..." IS the entire query (nothing
+     else to AND it with) -> logic "OR" with one filter per option, exactly
+     as before.
+   - DIFFERENT fields, but the "either...or..." sits ALONGSIDE other
+     requirements that must ALSO hold (e.g. "8+ years of Python AND (either
+     a Master's from a Tier-1 school OR 10+ years total experience)") ->
+     do NOT set top-level logic "OR" (that would wrongly make the Python
+     requirement optional too). Instead, list every OTHER requirement in
+     "filters" under logic "AND" as usual, and put the two-or-more
+     alternative routes in "alternative_groups": a list of
+     {{"filters": [...]}} objects, one object per route, each containing
+     only that route's own filter(s). A candidate must satisfy every filter
+     in AT LEAST ONE route. Every filter inside a route is a normal resolved
+     filter (same field/operator/value/skill shape as "filters"); do not put
+     an "alternative_groups" object inside another route -- routes never
+     nest.
 5. "join immediately" -> notice_period lte 0 (unit days). "within N days/months"
    -> notice_period lte N with the matching unit.
 5b. Degree-level phrasing ("has a master's", "bachelor's degree", "with an MBA")
@@ -612,13 +688,28 @@ RULES:
    degree name is fine as the value (e.g. "Master's", "MS", "Master") -- it is
    canonicalized automatically, so do not worry about exact spelling.
 6. If the query is vague and could map to multiple thresholds/values
-   ("experienced", "near", "recent", "senior" without a number), return intent
-   "CLARIFY" with a concise question and 2-4 concrete options. Do NOT guess --
-   this applies even when a number seems like a "reasonable default"
-   (e.g. "experienced" could plausibly mean 3, 5, or 10+ years to different
-   recruiters) -- silently picking one is exactly the guessing this rule
-   forbids. If NEW QUERY has no explicit number for a numeric field, you may
-   NOT invent one; only CLARIFY.
+   ("experienced", "near", "recent"), return intent "CLARIFY" with a concise
+   question and 2-4 concrete options. Do NOT guess -- this applies even when
+   a number seems like a "reasonable default" (e.g. "experienced" could
+   plausibly mean 3, 5, or 10+ years to different recruiters) -- silently
+   picking one is exactly the guessing this rule forbids. If NEW QUERY has no
+   explicit number for a numeric field, you may NOT invent one; only CLARIFY.
+   EXCEPTION -- a named LEVEL word describing the candidate pool overall
+   ("fresher", "entry level", "junior", "mid level"/"mid-level"/
+   "intermediate", "senior", "lead"/"principal"/"staff") is NOT vague like
+   "experienced" is -- it has a real, defined system meaning, so it is a
+   classification, not a guess. Only when NO explicit years number is ALSO
+   stated for total experience in the same query: emit
+   {{"field":"seniority","operator":"equals","value":"<term as stated>"}}
+   instead of CLARIFY (a deterministic backend step resolves it into a real
+   years range and job-title check -- you never need to pick a number
+   yourself). Two things do NOT trigger this exception, and both keep their
+   existing handling: (a) an explicit number IS also given ("Senior folks
+   with 10+ years..." below stays exactly `experience gte 10`, no seniority
+   filter added -- the recruiter's own number always wins), (b) the level
+   word is part of a full/specific job-title phrase being searched for as a
+   role ("Candidates who have worked as a Senior Software Engineer" below
+   stays exactly `job_title contains "Senior Software Engineer"`).
 6-clarify-field. Whenever the CLARIFY is about a threshold on ONE real
    ALLOWED_FIELDS field (true for "experienced" -> "experience", "reasonable
    notice period" -> "notice_period", "big employment gap" ->
@@ -762,6 +853,23 @@ RULES:
    different from "skill" (a technology/tool, e.g. "Python") and from
    "company" (WHERE they worked) -- a title is WHAT they were called there.
    "worked as X" / "held the role of X" / "an X by title" -> job_title.
+   EXCEPTION: a bare practice-area/umbrella-concept word (see rule 3 --
+   "devops", "frontend", "backend", "QA") followed by a generic PERSON-
+   SUFFIX ("devops guy", "devops eng"/"engineer", "backend dev", "QA
+   person") is NOT a stated job title -- it's casual phrasing for "someone
+   who does that kind of work," not a title a resume states. Route it
+   exactly like the bare concept word alone per rule 3 (skill "in" with
+   proposed concrete tools), NOT job_title. CONFIRMED LIVE FAILURE, do not
+   repeat it: "I need a devops guy"/"i need devops eng" were wrongly routed
+   to job_title contains "devops", which only matches a candidate whose
+   stored title LITERALLY contains that substring -- missing everyone else
+   with real DevOps experience under a differently-worded title (confirmed:
+   matched only 1 of 99 real candidates in a job with far more DevOps-
+   experienced people than that). Only a REAL, specific title phrase is
+   job_title -- one naming an actual seniority/level or distinguishing
+   modifier the recruiter is searching for as a resume-stated role ("Senior
+   DevOps Engineer", "DevOps Team Lead"), or an explicit "worked as a
+   .../held the title..." framing.
 6f-ii. "certification" = a formal certificate/credential someone HOLDS
    ("AWS Certified", "PMP", "certified Scrum Master") -> field
    "certification", operator "contains", value = the certification/technology

@@ -29,6 +29,22 @@ FIELD_TYPES: dict[str, str] = {
     "domain": "string",              # industry/functional domain (e.g. "FinTech", "Healthcare
                                       # IT Engineering"), classified from real experience text
                                       # -- see experience_index/classifications.jsonl
+    "domain_experience": "number",   # years spent in ONE specific domain/practice area
+                                      # (e.g. 2 years of DevOps, not total career length) --
+                                      # summed from real per-experience durations against that
+                                      # experience's classified subdomain, see
+                                      # candidates._load_candidate_domain_years. Unlike
+                                      # skill_experience (structurally unanswerable -- no
+                                      # per-skill duration data exists anywhere), this IS
+                                      # answerable: real per-experience duration data exists,
+                                      # it's just summed by subdomain here for the first time.
+    "seniority": "string",           # a bare level word ("fresher"/"mid level"/"senior"/etc)
+                                      # -- NEVER reaches the engine/candidate data directly;
+                                      # service._expand_seniority_filters deterministically
+                                      # expands it into a real experience range + job_title
+                                      # check before validation ever sees it. Exists here only
+                                      # so the LLM schemas (derived from FIELD_TYPES) accept it
+                                      # as a valid field to emit.
 }
 
 ALLOWED_FIELDS: list[str] = list(FIELD_TYPES.keys())
@@ -53,10 +69,15 @@ FIELD_LABELS: dict[str, str] = {
     "employment_gap_months": "longest employment gap (months)",
     "company_type": "company type (product/service)",
     "domain": "industry/functional domain",
+    "domain_experience": "years of experience in a specific domain/practice area",
+    "seniority": "seniority level",
 }
 
-# Fields that MUST carry a `skill` key (which skill the number refers to).
-SKILL_SCOPED_FIELDS = {"skill_experience"}
+# Fields that MUST carry a `skill` key -- reused generically as "the named
+# target this number refers to" for BOTH skill_experience (a skill name) and
+# domain_experience (a domain/subdomain name), rather than adding a second,
+# near-identical Filter attribute just for the domain case.
+SKILL_SCOPED_FIELDS = {"skill_experience", "domain_experience"}
 
 NUMERIC_OPERATORS = {"gte", "lte", "gt", "lt"}
 STRING_OPERATORS = {"equals", "not_equals", "contains", "not_contains"}
@@ -147,8 +168,76 @@ def bare_degree_rank(text: str | None) -> int | None:
     return None
 
 
+# Seniority-band table: a bare level word ("fresher", "mid level", "senior")
+# resolves to a defined years range PLUS a set of job-title keywords, rather
+# than the generic "ask the recruiter for a number every time" CLARIFY path
+# (see prompt.py/prompt_v2.py's vague-threshold rule) -- once a band has a
+# real, agreed-on definition, it's no longer an undefined guess, so resolving
+# it deterministically here is the same move as education_rank/tier_rank
+# below: let the LLM only recognize WHICH band was named (a classification
+# task it's good at), and do the actual number-crunching in code.
+#
+# `max: None` (the "lead" band) is intentionally open-ended -- above every
+# other band's ceiling, there's no upper bound to a "lead/principal" search;
+# a 25-year veteran doesn't stop qualifying.
+#
+# title_keywords deliberately avoids two confirmed false-positive patterns
+# given engine.py's plain-substring (no word-boundary) matching for
+# free-text list fields like job_title: roman-numeral suffixes ("SDE I" is a
+# literal substring of "SDE II" and "SDE III" -- using any of these would
+# make a genuinely senior "SDE III" candidate spuriously match the junior/mid
+# checks too), and bare generic words that collide with unrelated real
+# titles ("Intern" is a substring of "International", "Staff" is a substring
+# of "Staffing Coordinator"/"Staff Accountant" -- "Internship"/"Staff
+# Engineer" avoid this while still matching real resumes).
+SENIORITY_BANDS: dict[str, dict] = {
+    "fresher": {"min": 0, "max": 1,
+        "title_keywords": ["Fresher", "Freshers", "Trainee", "Graduate Engineer",
+                            "Graduate Trainee", "Internship"]},
+    "junior": {"min": 1, "max": 3,
+        "title_keywords": ["Junior", "Jr.", "Associate Software Engineer",
+                            "Associate Engineer"]},
+    "mid": {"min": 3, "max": 7,
+        "title_keywords": ["Mid-Level", "Mid Level", "Intermediate Engineer"]},
+    "senior": {"min": 7, "max": 12,
+        "title_keywords": ["Senior", "Sr."]},
+    "lead": {"min": 12, "max": None,
+        "title_keywords": ["Lead", "Principal", "Staff Engineer", "Architect"]},
+}
+
+# Alias phrases matched by whole-word keyword against the text, same
+# word-boundary approach as _DEGREE_KEYWORDS above -- so "Mid Level",
+# "mid-level", "Senior", "Sr" all resolve to the same canonical band
+# regardless of exactly how the recruiter/LLM phrased it.
+_SENIORITY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("fresher", ("fresher", "entry level", "entry-level", "trainee", "graduate")),
+    ("junior", ("junior", "jr")),
+    ("mid", ("mid level", "mid-level", "midlevel", "mid", "intermediate")),
+    ("senior", ("senior", "sr")),
+    ("lead", ("lead", "principal", "staff")),
+]
+
+
+def seniority_band(text: str | None) -> str | None:
+    """Canonical band key ("fresher"/"junior"/"mid"/"senior"/"lead") for free
+    text, mirroring education_rank()'s word-boundary keyword matching --
+    robust to phrasing so "Mid Level", "mid-level", "Senior", "Sr" all
+    resolve regardless of exactly how the recruiter/LLM wrote it. Returns
+    None for anything unrecognized (a genuinely different word like
+    "experienced" that names no specific band)."""
+    if not text:
+        return None
+    norm = str(text).strip().lower()
+    for band, keywords in _SENIORITY_KEYWORDS:
+        for kw in keywords:
+            pattern = kw if " " in kw else rf"\b{re.escape(kw)}\b"
+            if re.search(pattern, norm):
+                return band
+    return None
+
+
 # Shared Low/Medium/High tier scale, used by both college_tier (from
-# master_universities.csv) and company_tier (from company_ranks.json).
+# master_universities_simple.csv) and company_tier (from company_ranks.json).
 # Ranked, not just labeled, so "top tier" can mean "gte High" the same way
 # degree-level queries do.
 _TIER_RANK = {"low": 1, "medium": 2, "high": 3}

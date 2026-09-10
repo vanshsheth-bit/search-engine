@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -59,6 +60,45 @@ def health() -> dict:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _warm_up_ollama() -> None:
+    """Fire a trivial completion at server startup so the model is already
+    loaded in memory before the first REAL recruiter query arrives.
+
+    Real, reported pain this targets: with no warm-up, the first request
+    after a server (re)start pays Ollama's full model-load time on top of
+    generation -- confirmed live this session as 240s+ timeouts. Uses the
+    SAME num_ctx as the real translate() call (app/llm/client.py) --
+    loading with a different context size would just force a SECOND reload
+    on the first real request instead of avoiding one (see
+    skill_verify.py's own comment on this exact mismatch). num_predict=1
+    keeps this to "load the weights and decode one token", not a real
+    generation. Best-effort: runs in a background thread so a slow or
+    unreachable Ollama never delays server startup, and any failure here
+    (Ollama not up yet, etc.) is only logged -- the first real request will
+    still retry normally, just without the warm-up's benefit."""
+    try:
+        requests.post(
+            f"{settings.ollama_url}/api/chat",
+            json={
+                "model": settings.model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": 1, "num_ctx": settings.num_ctx},
+                "keep_alive": settings.ollama_keep_alive,
+            },
+            timeout=settings.llm_timeout,
+        )
+        logger.info("Ollama warm-up complete (model=%s)", settings.model)
+    except requests.RequestException as exc:
+        logger.warning("Ollama warm-up failed (will retry on first real request): %s", exc)
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    threading.Thread(target=_warm_up_ollama, daemon=True).start()
 
 
 @app.post("/ai/candidates/filter", response_model=FilterResponse)

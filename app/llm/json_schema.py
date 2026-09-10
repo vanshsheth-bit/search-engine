@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from app.core.vocabulary import (
     ALLOWED_FIELDS,
-    ALLOWED_OPERATORS,
     NUMERIC_OPERATORS,
     VALID_INTENTS,
 )
+from app.llm.filter_item_schema import alternative_groups_schema, resolved_filter_item_schema
 
 
 def build_filter_json_schema() -> dict:
@@ -19,25 +19,9 @@ def build_filter_json_schema() -> dict:
             "replace_all": {"type": "boolean"},
             "filters": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "field": {"type": "string", "enum": ALLOWED_FIELDS},
-                        "operator": {"type": "string", "enum": ALLOWED_OPERATORS},
-                        "skill": {"type": "string"},
-                        "value": {
-                            "anyOf": [
-                                {"type": "string"},
-                                {"type": "number"},
-                                {"type": "boolean"},
-                                {"type": "array"},
-                            ]
-                        },
-                        "unit": {"type": "string"},
-                    },
-                    "required": ["field", "operator", "value"],
-                },
+                "items": resolved_filter_item_schema(),
             },
+            "alternative_groups": alternative_groups_schema(),
             "question": {"type": "string"},
             "options": {"type": "array", "items": {"type": "string"}},
             "clarify_field": {"type": "string", "enum": ALLOWED_FIELDS},

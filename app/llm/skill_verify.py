@@ -51,7 +51,17 @@ def verify_skill_candidates(term: str, shortlist: list[tuple[str, list[str]]]) -
     EMPTY set rather than guessing -- an unverified semantic hit must never
     reach real, unlabeled results just because verification itself broke;
     the search still returns its exact + taxonomy-related matches either
-    way, it just doesn't gain the extra semantic ones this round."""
+    way, it just doesn't gain the extra semantic ones this round.
+
+    think:True is REQUIRED here, unlike the main translate() call -- confirmed
+    live that think:False makes this model skip reasoning and rubber-stamp
+    EVERY candidate as qualifying, regardless of term: a candidate whose only
+    listed skills were "cooking, painting, yoga, gardening" was judged to
+    satisfy "Java". With think:True, the same call correctly returned no
+    matches. This is real, additional latency (confirmed: ~225s for a
+    2-candidate shortlist on CPU-only hardware, see skill_verify_timeout),
+    not a toggle to flip back for speed -- think:False here isn't faster-
+    but-slightly-less-accurate, it's non-functional."""
     if not shortlist:
         return set()
     prompt = _build_prompt(term, shortlist)
@@ -63,7 +73,7 @@ def verify_skill_candidates(term: str, shortlist: list[tuple[str, list[str]]]) -
                 "messages": [{"role": "user", "content": prompt}],
                 "format": {"type": "array", "items": {"type": "integer"}},
                 "stream": False,
-                "think": False,
+                "think": True,
                 # Same num_ctx as the main translation call (app/llm/client.py)
                 # -- a mismatched context size forces Ollama to reload the
                 # model between the two calls within a single request
@@ -71,8 +81,9 @@ def verify_skill_candidates(term: str, shortlist: list[tuple[str, list[str]]]) -
                 # this call ran, vs. the 12288 the main call had just used),
                 # real avoidable overhead on top of an already-slow prompt.
                 "options": {"temperature": 0, "num_ctx": settings.num_ctx},
+                "keep_alive": settings.ollama_keep_alive,
             },
-            timeout=settings.llm_timeout,
+            timeout=settings.skill_verify_timeout,
         )
         resp.raise_for_status()
         content = resp.json()["message"]["content"]

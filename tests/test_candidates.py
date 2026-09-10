@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.candidates import canonicalize_country, get_matched_candidates
+from app.core.candidates import (
+    _skill_years_from_experience,
+    canonicalize_country,
+    get_matched_candidates,
+)
 from app.core.engine import apply_spec
 from app.core.experience_index import IndexPaths
 from app.models.schemas import Filter, FilterSpec
@@ -45,6 +49,46 @@ def test_canonicalize_country_leaves_unknown_names_unchanged():
 def test_canonicalize_country_handles_none_and_empty():
     assert canonicalize_country(None) is None
     assert canonicalize_country("") == ""
+
+
+def test_skill_years_sums_duration_across_every_job_that_names_the_skill():
+    experience = [
+        {"position": "Backend Engineer", "description": "Built services in Python and Go.",
+         "duration_years": 2.0},
+        {"position": "Senior Engineer", "description": "Led a Python team.", "duration_years": 1.5},
+        {"position": "Support Analyst", "description": "Handled tickets.", "duration_years": 3.0},
+    ]
+    out = _skill_years_from_experience(["Python"], experience)
+    assert out == {"Python": {"years": 3.5}}  # 2.0 + 1.5, third job never mentions it
+
+
+def test_skill_years_none_for_a_skill_never_named_in_any_job_text():
+    experience = [{"position": "Engineer", "description": "Did engineering things.",
+                   "duration_years": 4.0}]
+    out = _skill_years_from_experience(["Python"], experience)
+    assert out == {"Python": {"years": None}}
+
+
+def test_skill_years_none_for_an_unrecognized_skill_name():
+    # Not a known tool at all (see skill_taxonomy.is_known_tool) -- never
+    # attempts a text search, regardless of what the description says.
+    experience = [{"position": "Engineer", "description": "Focused on route safety.",
+                   "duration_years": 4.0}]
+    out = _skill_years_from_experience(["route", "safety"], experience)
+    assert out == {"route": {"years": None}, "safety": {"years": None}}
+
+
+def test_skill_years_excludes_known_tools_that_are_also_common_english_words():
+    # "Excel"/"Go" ARE real, recognized taxonomy tools (unlike "route"/
+    # "safety" above) -- but a dataset-wide audit found the word is used
+    # almost exclusively in its generic English sense in this corpus's
+    # prose (see _AMBIGUOUS_FOR_YEARS_TEXT_MATCH's comment), so a mention
+    # must NOT be trusted as evidence of real tool experience even though
+    # the literal word is right there in the text.
+    experience = [{"position": "Manager", "description": "Worked hard to excel and go the extra mile.",
+                   "duration_years": 5.0}]
+    out = _skill_years_from_experience(["Excel", "Go"], experience)
+    assert out == {"Excel": {"years": None}, "Go": {"years": None}}
 
 
 @_index_not_built

@@ -142,6 +142,14 @@ def extract_value(candidate: dict, f: Filter):
             return None
         return meta.get("years")
 
+    if field == "domain_experience":
+        domain_years = candidate.get("domain_years") or {}
+        target = (f.skill or "").lower()
+        for name, years in domain_years.items():
+            if name.lower() == target:
+                return years
+        return None
+
     if field == "notice_period":
         return _notice_days(candidate)
 
@@ -201,19 +209,44 @@ def matches_filter(candidate: dict, f: Filter) -> bool:
 
 
 def apply_spec(candidates: list[dict], spec: FilterSpec) -> list[dict]:
-    """Apply the full filter spec with AND/OR/NOT logic. Scores untouched."""
-    if not spec.filters:
+    """Apply the full filter spec with AND/OR/NOT logic. Scores untouched.
+
+    `spec.alternative_groups` (see schemas.AlternativeGroup) is an ADDITIONAL
+    gate on top of the flat AND/OR/NOT check above -- a candidate must pass
+    the flat check AND satisfy every filter in AT LEAST ONE group (groups are
+    OR'd against each other, each group's own filters are AND'd). This is
+    what lets a genuine cross-field "either requirement route A or route B"
+    coexist with other hard AND'd requirements in the same query, which
+    `spec.logic` alone cannot express (it's one flat operator over the
+    WHOLE `filters` list -- setting it to "OR" to handle one embedded
+    alternative would wrongly turn every other AND'd requirement optional
+    too). Always honored regardless of `spec.logic` -- the "only meaningful
+    under AND" restriction is enforced one layer up, in
+    service._hard_only, mirroring how Filter.hard's own AND-only
+    restriction is enforced outside this module."""
+    if not spec.filters and not spec.alternative_groups:
         return list(candidates)
 
     kept = []
     for c in candidates:
-        checks = [matches_filter(c, f) for f in spec.filters]
-        if spec.logic == "OR":
-            keep = any(checks)
-        elif spec.logic == "NOT":
-            keep = not any(checks)
-        else:  # AND
-            keep = all(checks)
+        if spec.filters:
+            checks = [matches_filter(c, f) for f in spec.filters]
+            if spec.logic == "OR":
+                keep = any(checks)
+            elif spec.logic == "NOT":
+                keep = not any(checks)
+            else:  # AND
+                keep = all(checks)
+        else:
+            keep = True
+        if keep and spec.alternative_groups:
+            # bool(g.filters) guards an EMPTY group from vacuously
+            # satisfying the OR (all([]) is True), which would otherwise
+            # defeat the whole gate.
+            keep = any(
+                bool(g.filters) and all(matches_filter(c, f) for f in g.filters)
+                for g in spec.alternative_groups
+            )
         if keep:
             kept.append(c)
 

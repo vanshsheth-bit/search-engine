@@ -18,13 +18,13 @@ import requests
 
 from app.core.config import settings
 from app.llm.json_schema import build_filter_json_schema
+from app.llm.json_schema_v2 import build_filter_json_schema_v2
 from app.llm.prompt import build_system_prompt
+from app.llm.prompt_v2 import build_system_prompt_v2
+from app.llm.schema_v2_adapter import parse_v2_output
 from app.models.schemas import LLMOutput
 
 logger = logging.getLogger(__name__)
-
-_SYSTEM_PROMPT = build_system_prompt()
-_JSON_SCHEMA = build_filter_json_schema()
 
 
 class LLMError(Exception):
@@ -38,11 +38,26 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
+        prompt_schema: Optional[str] = None,
     ) -> None:
         self.base_url = (base_url or settings.ollama_url).rstrip("/")
         self.model = model or settings.model
         self.timeout = timeout or settings.llm_timeout
         self.max_retries = max_retries or settings.llm_max_retries
+        # "v1" (default) or "v2" -- see config.py's Settings.prompt_schema
+        # docstring for what each means. Built PER INSTANCE, not as module
+        # globals the way this used to work: a module-level _SYSTEM_PROMPT/
+        # _JSON_SCHEMA built once at import time meant only one schema
+        # could ever be active in a process, making it impossible to
+        # construct a v1 and a v2 client side by side for an A/B test --
+        # exactly what this dual-path rollout exists to enable.
+        self.prompt_schema = prompt_schema or settings.prompt_schema
+        if self.prompt_schema == "v2":
+            self._system_prompt = build_system_prompt_v2()
+            self._json_schema = build_filter_json_schema_v2()
+        else:
+            self._system_prompt = build_system_prompt()
+            self._json_schema = build_filter_json_schema()
 
     def translate(
         self,
@@ -65,11 +80,11 @@ class LLMClient:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": self._system_prompt},
                 *(history or []),
                 {"role": "user", "content": user_msg},
             ],
-            "format": _JSON_SCHEMA,
+            "format": self._json_schema,
             "stream": False,
             # Thinking OFF: on this CPU-only hardware, thinking adds a
             # multi-minute tax to EVERY query regardless of complexity (even
@@ -80,6 +95,12 @@ class LLMClient:
             # call at all, so it can't hallucinate or need to "think".
             "think": False,
             "options": {"temperature": 0, "num_ctx": settings.num_ctx},
+            # Keeps the model resident between requests -- see
+            # settings.ollama_keep_alive's docstring for why the 5-minute
+            # Ollama default let the model unload during a normal gap
+            # between recruiter turns, making the NEXT request pay a full
+            # reload on top of generation.
+            "keep_alive": settings.ollama_keep_alive,
         }
 
         last_err: Optional[Exception] = None
@@ -118,6 +139,8 @@ class LLMClient:
                     load_ms, prompt_ms, body.get("prompt_eval_count", 0),
                     eval_ms, body.get("eval_count", 0),
                 )
+                if self.prompt_schema == "v2":
+                    return parse_v2_output(data)
                 return LLMOutput.model_validate(data)
             except (requests.RequestException, KeyError, json.JSONDecodeError,
                     ValueError) as exc:

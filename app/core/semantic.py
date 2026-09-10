@@ -26,13 +26,35 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-# Calibrated empirically against this project's real resume data (see
-# scripts/ -- similarity for a genuinely related skill pairing sits ~0.5-0.7
-# with this model on short skill-list text; unrelated pairings drop below
-# 0.4). Kept as an env var since the right cutoff is corpus-dependent and
-# worth tuning once more real recruiter queries are observed.
-_MIN_SIMILARITY = float(os.getenv("SEMANTIC_MIN_SIMILARITY", "0.55"))
+# Deliberately its OWN env var, not the shared "EMBED_MODEL"/
+# "EXPERIENCE_EMBED_MODEL" used by app/core/embeddings.py (the experience-
+# index/classifier pipeline, which embeds full experience-description text --
+# a different task with its own, separately-verified model choice). Reusing
+# that name here would silently also change the experience index's model the
+# moment someone sets EMBED_MODEL, with zero verification either fix was
+# wanted -- this module's job (embedding a single skill/tool name and a
+# short skill-list sentence) is different enough that the two should never
+# be coupled by an env var collision.
+_EMBED_MODEL = os.getenv("SKILL_EMBED_MODEL", "all-minilm")
+# Calibrated empirically against this project's real resume data (job
+# 00000103, 99 candidates). all-minilm (chosen over nomic-embed-text: 3x
+# smaller, 45MB vs 137MB, AND measurably better separated on this exact
+# task) gave, on real skill lists: exact/close match ~0.64, a genuine
+# near-miss this feature exists to catch (a TensorFlow/XGBoost/Keras
+# candidate against a "scikit-learn" query, no literal alias) ~0.52, a
+# wrong-but-plausible-sounding sibling skill (a Java/Selenium/JUnit
+# candidate against "Python") topping out at 0.44 across the entire real
+# remaining-candidate pool, and a genuinely absurd pairing ~0.24-0.37.
+# 0.48 sits in the gap between the wrong-sibling ceiling (0.44) and the
+# genuine-near-miss floor (0.52) -- nomic-embed-text's old 0.55 threshold
+# was calibrated for ITS OWN, much narrower score distribution (0.53-0.80)
+# and is meaningless on all-minilm's scale; confirmed live that under
+# nomic, a wrong sibling skill (0.62) sat ABOVE that threshold -- the exact
+# false-positive bug (Akrem Shirwa's Java/Selenium skills counted as
+# "Python") this recalibration fixes. Kept as an env var since the right
+# cutoff is corpus-dependent and worth re-tuning if the embedding model
+# changes again or more real recruiter queries are observed.
+_MIN_SIMILARITY = float(os.getenv("SEMANTIC_MIN_SIMILARITY", "0.48"))
 
 
 def _embed(texts: list[str]) -> list[list[float]] | None:

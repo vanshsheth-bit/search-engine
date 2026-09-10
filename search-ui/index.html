@@ -3,22 +3,28 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Candidate Search Assistant — Test Harness</title>
+<title>Rebee.ai — Candidate Search Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --panel-2: #1d212a;
-    --border: #2a2e37;
-    --text: #e8e9ec;
-    --muted: #8b8f99;
-    --accent: #4f8cff;
-    --accent-dim: #2a3c5c;
-    --bot-bubble: #1d212a;
-    --user-bubble: #26406e;
-    --ok: #3fbf7f;
-    --warn: #e0a83e;
-    --err: #e05a5a;
+    --bg: #f6f8f7;
+    --surface: #ffffff;
+    --border: #e4e7e6;
+    --text: #17191c;
+    --muted: #767c85;
+    --accent: #1aa870;
+    --accent-hover: #158f5f;
+    --accent-tint: #e5f7ee;
+    --accent-tint-text: #0f6e46;
+    --user-bubble: #f0f2f1;
+    --ok: #1aa870;
+    --warn-bg: #fdf3e0;
+    --warn-text: #8a5a0b;
+    --err-bg: #fdecec;
+    --err-text: #b3261e;
+    --shadow: 0 1px 2px rgba(23, 25, 28, 0.04), 0 1px 12px rgba(23, 25, 28, 0.03);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -26,61 +32,76 @@
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    font-family: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     display: flex;
     flex-direction: column;
   }
   header {
-    padding: 14px 20px;
+    background: var(--surface);
+    padding: 14px 22px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
   }
-  header .title { font-weight: 600; font-size: 15px; }
+  header .logo {
+    font-size: 19px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  header .logo .dot-ai { color: var(--accent); }
+  header .title-block { display: flex; flex-direction: column; gap: 2px; }
   header .subtitle { color: var(--muted); font-size: 12px; }
   header .meta {
     margin-left: auto;
     display: flex;
     gap: 10px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--muted);
     align-items: center;
   }
   header .meta input {
-    background: var(--panel);
+    background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 6px;
-    padding: 3px 6px;
-    font-size: 11px;
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
     width: auto;
   }
   header button {
     cursor: pointer;
     border: 1px solid var(--border);
-    background: transparent;
-    color: var(--muted);
-    border-radius: 6px;
-    padding: 3px 10px;
-    font-size: 11px;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 12.5px;
+    transition: border-color 0.15s, background 0.15s;
   }
+  header button:hover { border-color: var(--accent); background: var(--accent-tint); }
 
   .chips-bar {
-    padding: 10px 20px;
+    background: var(--surface);
+    padding: 10px 22px;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     border-bottom: 1px solid var(--border);
     min-height: 20px;
+    align-items: center;
   }
   .chips-bar:empty { display: none; }
   .chip {
-    background: var(--accent-dim);
-    color: var(--text);
+    background: var(--accent-tint);
+    color: var(--accent-tint-text);
     border-radius: 999px;
     padding: 5px 8px 5px 12px;
-    font-size: 12px;
+    font-size: 12.5px;
+    font-weight: 600;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -88,16 +109,23 @@
   .chip button {
     background: none;
     border: none;
-    color: var(--muted);
+    color: var(--accent-tint-text);
+    opacity: 0.6;
     cursor: pointer;
     padding: 0;
     width: 15px;
     height: 15px;
-    font-size: 13px;
+    font-size: 14px;
+    line-height: 1;
   }
-  .chip button:hover { color: var(--err); }
+  .chip button:hover { opacity: 1; color: var(--err-text); }
+  .chip-group {
+    background: transparent;
+    border: 1.5px dashed var(--accent-tint-text);
+  }
   .clear-all-link {
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 600;
     color: var(--muted);
     background: none;
     border: none;
@@ -108,7 +136,7 @@
   .thread {
     flex: 1;
     overflow-y: auto;
-    padding: 20px;
+    padding: 22px;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -117,27 +145,33 @@
   .msg.user { align-self: flex-end; flex-direction: row-reverse; }
   .msg.bot { align-self: flex-start; }
   .avatar {
-    width: 26px;
-    height: 26px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
+    font-size: 14px;
     flex-shrink: 0;
-    background: var(--panel);
+    background: var(--user-bubble);
     border: 1px solid var(--border);
   }
+  .msg.bot .avatar { background: var(--accent); border-color: var(--accent); }
   .bubble {
     border-radius: 14px;
-    padding: 10px 14px;
+    padding: 11px 15px;
     font-size: 14px;
-    line-height: 1.45;
+    line-height: 1.5;
   }
-  .msg.user .bubble { background: var(--user-bubble); border-top-right-radius: 4px; }
-  .msg.bot .bubble { background: var(--bot-bubble); border-top-left-radius: 4px; }
-  .msg.bot.warn .bubble { background: #2b2612; color: var(--warn); }
-  .msg.bot.err .bubble { background: #2b1515; color: var(--err); }
+  .msg.user .bubble { background: var(--user-bubble); color: var(--text); border-top-right-radius: 4px; }
+  .msg.bot .bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    border-top-left-radius: 4px;
+  }
+  .msg.bot.warn .bubble { background: var(--warn-bg); border-color: var(--warn-bg); color: var(--warn-text); }
+  .msg.bot.err .bubble { background: var(--err-bg); border-color: var(--err-bg); color: var(--err-text); }
 
   .options {
     display: flex;
@@ -146,40 +180,79 @@
     margin-top: 10px;
   }
   .options button {
-    background: var(--panel-2);
+    background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 6px 12px;
     font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
   }
-  .options button:hover { border-color: var(--accent); }
+  .options button:hover { border-color: var(--accent); background: var(--accent-tint); color: var(--accent-tint-text); }
   .suggestions { margin: 8px 0 0 18px; padding: 0; font-size: 13px; color: var(--muted); }
+
+  .confirm-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 0;
+  }
+  .confirm-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .confirm-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  .confirm-row.dropped { color: var(--muted); }
+  .confirm-search-btn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .confirm-search-btn:hover { background: var(--accent-hover); }
+  .confirm-search-btn:disabled { opacity: 0.5; cursor: default; }
+  .confirm-search-btn.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    margin-left: 8px;
+  }
+  .confirm-search-btn.secondary:hover { background: var(--accent); color: white; }
 
   .cards { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
   .card {
-    background: var(--panel);
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
+    border-radius: 12px;
+    padding: 13px 15px;
   }
   .card-top { display: flex; justify-content: space-between; align-items: baseline; }
-  .card-name { font-weight: 600; font-size: 14px; }
+  .card-name { font-weight: 700; font-size: 14px; }
   .score {
     font-size: 11px;
-    color: var(--ok);
-    background: rgba(63,191,127,0.12);
+    font-weight: 700;
+    color: var(--accent-tint-text);
+    background: var(--accent-tint);
     border-radius: 6px;
     padding: 2px 7px;
   }
-  .card-line { font-size: 12px; color: var(--muted); margin-top: 5px; }
-  .card.partial { opacity: 0.88; border-style: dashed; }
-  .partial-badge { color: var(--warn); font-weight: 500; }
+  .card-line { font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+  .card.partial { border-style: dashed; }
+  .partial-badge { color: var(--warn-text); font-weight: 600; }
+  .fuzzy-badge { color: var(--warn-text); font-weight: 600; }
   .skills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   .skill-tag {
     font-size: 10.5px;
-    background: #21242c;
+    font-weight: 600;
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 2px 6px;
@@ -189,14 +262,15 @@
   .typing { color: var(--muted); font-size: 13px; font-style: italic; }
 
   form.composer {
+    background: var(--surface);
     border-top: 1px solid var(--border);
-    padding: 14px 20px 18px;
+    padding: 14px 22px 18px;
     display: flex;
     gap: 8px;
   }
   .composer input {
     flex: 1;
-    background: var(--panel);
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 13px 15px;
@@ -204,28 +278,30 @@
     font-size: 14px;
     outline: none;
   }
-  .composer input:focus { border-color: var(--accent); }
+  .composer input:focus { border-color: var(--accent); background: var(--surface); }
   .composer button {
     background: var(--accent);
     color: white;
     border: none;
     border-radius: 10px;
-    padding: 0 20px;
+    padding: 0 22px;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 700;
     cursor: pointer;
+    transition: background 0.15s;
   }
+  .composer button:hover { background: var(--accent-hover); }
   .composer button:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
 <header>
-  <div>
-    <div class="title">Candidate Search Assistant</div>
-    <div class="subtitle">Type anything, in your own words. Test harness for /ai/candidates/filter.</div>
+  <div class="logo">rebee<span class="dot-ai">.ai</span></div>
+  <div class="title-block">
+    <div class="subtitle">Candidate Search Assistant</div>
   </div>
   <div class="meta">
-    <button id="newSessionBtn">new chat</button>
+    <button id="newSessionBtn">New chat</button>
   </div>
 </header>
 
@@ -271,6 +347,8 @@
 
   let sessionId = getSessionId();
   let lastFilters = [];
+  let lastAlternativeGroups = [];
+  let lastLogic = "AND";
 
   const el = {
     thread: document.getElementById("thread"),
@@ -280,6 +358,13 @@
     newSessionBtn: document.getElementById("newSessionBtn"),
     chips: document.getElementById("chips"),
   };
+
+  // Inline SVG, not an emoji -- a bee emoji rendered as a broken/missing
+  // glyph on at least one real Chromium build tested (font/platform
+  // dependent), so the bot avatar can't rely on emoji font support.
+  const BOT_AVATAR_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" ' +
+    'fill="white" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>';
 
   function escapeHtml(s) {
     return String(s)
@@ -300,7 +385,7 @@
   function addBotBubble({ html, cls = "" }) {
     const div = document.createElement("div");
     div.className = "msg bot" + (cls ? " " + cls : "");
-    div.innerHTML = `<div class="avatar">🤖</div><div class="bubble">${html}</div>`;
+    div.innerHTML = `<div class="avatar">${BOT_AVATAR_SVG}</div><div class="bubble">${html}</div>`;
     el.thread.appendChild(div);
     el.thread.scrollTop = el.thread.scrollHeight;
     return div;
@@ -309,7 +394,7 @@
   function addTyping() {
     const div = document.createElement("div");
     div.className = "msg bot";
-    div.innerHTML = `<div class="avatar">🤖</div><div class="bubble typing">thinking…</div>`;
+    div.innerHTML = `<div class="avatar">${BOT_AVATAR_SVG}</div><div class="bubble typing">thinking…</div>`;
     el.thread.appendChild(div);
     el.thread.scrollTop = el.thread.scrollHeight;
     return div;
@@ -332,22 +417,49 @@
         (pm.missing && pm.missing.length ? ` — missing: ${pm.missing.map(escapeHtml).join(", ")}` : "") +
         `</div>`
       : "";
+    const fm = c.fuzzy_skill_match;
+    const fuzzyBadge = fm && fm.length
+      ? `<div class="card-line fuzzy-badge">⚠ Not an exact match — ` +
+        fm.map(f => `${escapeHtml(f.skill)} (${f.matched_via === "semantic" ? "matched via semantic similarity, not the literal skill" : "matched via a related tool"})`).join("; ") +
+        `</div>`
+      : "";
+    // Real per-experience duration in the SPECIFIC domain being searched
+    // for, not the candidate's total career length -- e.g. "who has worked
+    // in fintech" must show years actually spent in fintech-classified
+    // work, not silently imply their whole career was in it (see
+    // service.py's _annotate_domain_match_years).
+    const dmy = c.domain_match_years;
+    const domainMatchLine = dmy && dmy.length
+      ? `<div class="card-line">🏦 ${dmy.map(d => `${escapeHtml(String(d.years))} yrs in ${escapeHtml(d.domain)}`).join(", ")} (of ${escapeHtml(String(c.experience))} yrs career)</div>`
+      : "";
+    // Real per-skill duration for the specific skill(s) being searched for,
+    // computed from the candidate's own job-description text (see
+    // service.py's _annotate_skill_match_years) -- only present when the
+    // resume's own text actually supports it, so most matches still won't
+    // show this line and fall back to the plain total-years line above.
+    const smy = c.skill_match_years;
+    const skillMatchLine = smy && smy.length
+      ? `<div class="card-line">🧩 ${smy.map(s => `${escapeHtml(String(s.years))} yrs in ${escapeHtml(s.skill)}`).join(", ")}</div>`
+      : "";
     return `
-      <div class="card${pm ? " partial" : ""}">
+      <div class="card${pm || fm ? " partial" : ""}">
         <div class="card-top">
           <span class="card-name">${escapeHtml(c.name || c.id || "Unnamed")}</span>
           ${c.match_score !== undefined ? `<span class="score">${escapeHtml(String(c.match_score))}</span>` : ""}
         </div>
         <div class="card-line">
-          ${[c.location, c.experience !== undefined ? c.experience + " yrs" : null, c.education]
+          ${[c.location, c.experience !== undefined ? c.experience + " yrs career" : null, c.education]
             .filter(Boolean)
             .map(escapeHtml)
             .join(" · ")}
         </div>
+        ${domainMatchLine}
+        ${skillMatchLine}
         ${universities.length ? `<div class="card-line">🏫 ${universities.map(escapeHtml).join(", ")}${c.college_tier ? ` (${escapeHtml(c.college_tier)} tier)` : ""}</div>` : ""}
         ${companies.length ? `<div class="card-line">🏢 ${companies.slice(0, 5).map(escapeHtml).join(", ")}${c.company_tier ? ` (${escapeHtml(c.company_tier)} tier)` : ""}</div>` : ""}
         ${skills.length ? `<div class="skills">${skills.map(s => `<span class="skill-tag">${escapeHtml(s)}</span>`).join("")}</div>` : ""}
         ${partialBadge}
+        ${fuzzyBadge}
       </div>
     `;
   }
@@ -371,6 +483,47 @@
         cls: "warn",
       };
     }
+    if (resp.status === "confirm") {
+      // Every active/proposed filter shown as its OWN checkbox -- never
+      // one bundled yes/no sentence -- so a stale filter can't hide inside
+      // an agreed-to sentence the way it silently did before this UI
+      // existed. Wired up by wireConfirmChoices after this HTML is
+      // inserted into the DOM (needs live checkbox state, which a static
+      // HTML string can't carry -- same reason wireOptionButtons exists
+      // as a separate post-insert step).
+      const rows = (resp.choices || []).map((c, i) => {
+        const checked = c.default_checked ? "checked" : "";
+        const rowCls = c.default_checked ? "" : " dropped";
+        return `<label class="confirm-row${rowCls}">` +
+          `<input type="checkbox" data-choice="${i}" ${checked}> ${escapeHtml(c.label)}</label>`;
+      }).join("");
+      return {
+        html: `${escapeHtml(resp.message || "Review your filters below.")}` +
+          `<div class="confirm-choices">${rows}</div>` +
+          `<button type="button" class="confirm-search-btn" data-confirm-search>Search</button>` +
+          `<button type="button" class="confirm-search-btn secondary" data-confirm-new-search>New Search (clear other filters)</button>`,
+        cls: "warn",
+      };
+    }
+    if (resp.status === "domain_skill_pick") {
+      // A vague domain-only query ("I want a DevOps guy") -- real skill
+      // choices (grounded in what candidates in THIS job actually have,
+      // see service._domain_skill_options), all unchecked by default so
+      // the recruiter actively picks. Hitting Search with none checked
+      // just searches the domain alone -- the built-in "skip narrowing"
+      // path. Wired up by wireDomainSkillPick after insertion, same
+      // reason as wireConfirmChoices (needs live checkbox state).
+      const rows = (resp.skill_options || []).map((s, i) =>
+        `<label class="confirm-row"><input type="checkbox" data-skill="${i}"> ${escapeHtml(s)}</label>`
+      ).join("");
+      return {
+        html: `${escapeHtml(resp.message || "Which skills matter for this search?")}` +
+          `<div class="confirm-choices">${rows}</div>` +
+          `<button type="button" class="confirm-search-btn" data-domain-skill-search>Search</button>` +
+          `<button type="button" class="confirm-search-btn secondary" data-domain-skill-new-search>New Search (clear other filters)</button>`,
+        cls: "warn",
+      };
+    }
     if (resp.status === "unsupported") {
       return { html: escapeHtml(resp.message || "That's not something I can filter on."), cls: "warn" };
     }
@@ -381,9 +534,20 @@
       return { html: escapeHtml(resp.message || "Sorry, I didn't catch that — could you rephrase?"), cls: "err" };
     }
     if (resp.status === "no_match") {
+      // Real bug: this used to only show resp.message when it literally
+      // started with "Couldn't apply" (the one specific case this was
+      // originally written for -- a dropped, unsupported filter). Every
+      // OTHER honest explanation the backend can attach to a no_match
+      // (an untracked skill/domain term, a hallucinated filter dropped for
+      // not appearing in the message, a typo correction, a free-text
+      // match search that still came up empty) starts with something
+      // else entirely and was silently thrown away here -- exactly the
+      // moment a recruiter most needs to know WHY nothing came back.
+      // resp.message is only ever populated with something meant to be
+      // shown (see service.py's skip_note/extra_message construction), so
+      // showing it unconditionally is correct, not just permissive.
       const sugg = (resp.suggestions || []).map(s => `<li>${escapeHtml(s)}</li>`).join("");
-      const skipNote = resp.message && resp.message.startsWith("Couldn't apply")
-        ? `<div class="card-line">${escapeHtml(resp.message)}</div>` : "";
+      const skipNote = resp.message ? `<div class="card-line">${escapeHtml(resp.message)}</div>` : "";
       return {
         html: `I couldn't find anyone matching ${chipSummary ? "<b>" + escapeHtml(chipSummary) + "</b>" : "that"}.` +
           skipNote +
@@ -401,13 +565,18 @@
     return { html: "Something unexpected happened." , cls: "err" };
   }
 
-  function renderChips(chips, filters) {
+  function renderChips(chips, filters, alternativeGroups, logic) {
     lastFilters = filters || [];
+    lastAlternativeGroups = alternativeGroups || [];
+    lastLogic = logic || "AND";
     el.chips.innerHTML = "";
     if (!chips || !chips.length) return;
     chips.forEach((chip, i) => {
       const div = document.createElement("div");
-      div.className = "chip";
+      // The one synthetic OR-of-routes chip (see merge.to_chips) is styled
+      // distinctly -- dashed border, no fill -- so it reads as "one unit,
+      // any ONE route required" rather than an ordinary AND'd fact pill.
+      div.className = "chip" + (chip.field === "_alternative_group" ? " chip-group" : "");
       div.innerHTML = `<span>${escapeHtml(chip.label)}</span>`;
       const rm = document.createElement("button");
       rm.textContent = "×";
@@ -454,10 +623,12 @@
         session_id: sessionId,
       });
       typingEl.remove();
-      renderChips(resp.chips, resp.filters);
+      renderChips(resp.chips, resp.filters, resp.alternative_groups, resp.logic);
       const { html, cls } = botReplyFor(resp);
       const bubble = addBotBubble({ html, cls });
       wireOptionButtons(bubble);
+      wireConfirmChoices(bubble, resp);
+      wireDomainSkillPick(bubble, resp);
     } catch (err) {
       typingEl.remove();
       addBotBubble({
@@ -476,18 +647,138 @@
     });
   }
 
+  // Shared submit step for both checklist screens (confirm,
+  // domain_skill_pick): PATCHes the built filter list, renders the result,
+  // and disables/re-enables whichever button was clicked. Factored out so
+  // the "Search" (merge onto current filters) and "New Search" (discard
+  // everything else) buttons on each screen share one code path instead of
+  // two near-duplicate copies.
+  async function submitChecklist(btn, filters, logic, alternativeGroups) {
+    btn.disabled = true;
+    try {
+      const patchResp = await patchJSON("/ai/candidates/filter/state", {
+        job_id: JOB_ID, session_id: sessionId, filters, logic,
+        alternative_groups: alternativeGroups,
+      });
+      renderChips(patchResp.chips, patchResp.filters, patchResp.alternative_groups, patchResp.logic);
+      const { html, cls } = botReplyFor(patchResp);
+      const bubble = addBotBubble({ html, cls });
+      wireOptionButtons(bubble);
+    } catch (err) {
+      addBotBubble({ html: `Couldn't apply filters (${escapeHtml(String(err))})`, cls: "err" });
+      btn.disabled = false;
+    }
+  }
+
+  // The real, expected path for a "confirm" response: the recruiter
+  // toggles checkboxes (no network call per click, unlike every other
+  // interaction in this file) and hits Search once, which submits the
+  // checked filters straight to the EXISTING deterministic PATCH endpoint
+  // -- no LLM call, same function removeChip already uses. `resp` is
+  // captured in this closure since the checkbox indices need to map back
+  // to real Filter objects the server returned, not just their labels.
+  function wireConfirmChoices(scopeEl, resp) {
+    const collectChecked = () => {
+      const checked = [];
+      scopeEl.querySelectorAll("input[data-choice]").forEach(cb => {
+        if (cb.checked) {
+          const idx = parseInt(cb.getAttribute("data-choice"), 10);
+          checked.push(resp.choices[idx].filter);
+        }
+      });
+      return checked;
+    };
+    const btn = scopeEl.querySelector("button[data-confirm-search]");
+    if (btn) {
+      // `resp.alternative_groups` -- carried alongside the flat-filter
+      // choices above (see PendingConfirm's docstring) -- is passed back
+      // as-is; reviewing/dropping individual routes isn't part of this
+      // confirm step, so it just survives it unchanged.
+      btn.onclick = () => submitChecklist(btn, collectChecked(), resp.logic, resp.alternative_groups || []);
+    }
+    // "New Search": real, reported gap -- this screen's rows already
+    // represent the recruiter's FULL intended filter set (existing ones
+    // shown unchecked when about to be dropped, see service.py's choices-
+    // building comment), but `resp.alternative_groups` above still always
+    // carries through untouched regardless of checkbox state -- there's no
+    // row for it at all. This button drops it too, giving a genuine "start
+    // over with just what's checked" option instead of only "Search",
+    // which quietly keeps any active OR-of-routes requirement alive.
+    const newBtn = scopeEl.querySelector("button[data-confirm-new-search]");
+    if (newBtn) {
+      newBtn.onclick = () => submitChecklist(newBtn, collectChecked(), resp.logic, []);
+    }
+  }
+
+  // The real, expected path for a "domain_skill_pick" response: the
+  // recruiter checks zero or more real skill choices and hits Search once.
+  // Submits [existing chips (lastFilters, captured when this response's
+  // OWN chips were rendered -- still the pre-this-turn set, see
+  // service.py's "not yet applied" convention) + resp.domain_filter +
+  // (if anything was checked) one "skill in [...]" filter] straight to the
+  // existing deterministic PATCH endpoint -- no LLM call. None checked
+  // just searches the domain alone.
+  function wireDomainSkillPick(scopeEl, resp) {
+    const collectChecked = () => {
+      const checked = [];
+      scopeEl.querySelectorAll("input[data-skill]").forEach(cb => {
+        if (cb.checked) {
+          const idx = parseInt(cb.getAttribute("data-skill"), 10);
+          checked.push(resp.skill_options[idx]);
+        }
+      });
+      return checked;
+    };
+    const buildFilters = (base) => {
+      const filters = [...base, resp.domain_filter];
+      const checked = collectChecked();
+      if (checked.length) {
+        filters.push({ field: "skill", operator: "in", value: checked });
+      }
+      return filters;
+    };
+    const btn = scopeEl.querySelector("button[data-domain-skill-search]");
+    if (btn) {
+      // This flow never touches groups -- pass the currently-active set
+      // through unchanged so it isn't silently dropped by omission (a
+      // PATCH replaces the whole state; leaving this out would mean
+      // "empty").
+      btn.onclick = () => submitChecklist(btn, buildFilters(lastFilters), resp.logic, lastAlternativeGroups);
+    }
+    // "New Search": real, reported gap -- this screen always silently kept
+    // EVERY currently-active filter (lastFilters/lastAlternativeGroups),
+    // with no way to search fresh from here -- a recruiter wanting to
+    // pivot ("actually, forget all that, just show me DevOps people") had
+    // to manually hit "clear all" first, THEN re-ask. This discards both
+    // and applies only the domain filter (+ whatever's checked).
+    const newBtn = scopeEl.querySelector("button[data-domain-skill-new-search]");
+    if (newBtn) {
+      newBtn.onclick = () => submitChecklist(newBtn, buildFilters([]), resp.logic, []);
+    }
+  }
+
   async function removeChip(index) {
-    const remaining = lastFilters.filter((_, i) => i !== index);
+    // The chip array is [...one-per-filter chips, one synthetic group chip
+    // (if alternative_groups is active)] -- see merge.to_chips. An index
+    // past the end of lastFilters means the group chip's "x" was clicked:
+    // clear the whole OR-of-routes requirement, leaving the flat filters
+    // untouched. Otherwise it's an ordinary per-filter removal, and the
+    // active alternative_groups must be resent unchanged (a PATCH replaces
+    // the whole state, so omitting it would silently clear it too).
+    const isGroupChip = index >= lastFilters.length;
+    const remaining = isGroupChip ? lastFilters : lastFilters.filter((_, i) => i !== index);
+    const groups = isGroupChip ? [] : lastAlternativeGroups;
     const typingEl = addTyping();
     try {
       const resp = await patchJSON("/ai/candidates/filter/state", {
         job_id: JOB_ID,
         session_id: sessionId,
         filters: remaining,
-        logic: "AND",
+        logic: lastLogic,
+        alternative_groups: groups,
       });
       typingEl.remove();
-      renderChips(resp.chips, resp.filters);
+      renderChips(resp.chips, resp.filters, resp.alternative_groups, resp.logic);
       const { html, cls } = botReplyFor(resp);
       addBotBubble({ html, cls });
     } catch (err) {
@@ -506,7 +797,7 @@
       const res = await fetch(API_BASE + "/ai/candidates/filter/state?" + qs, { method: "DELETE" });
       const resp = await res.json();
       typingEl.remove();
-      renderChips(resp.chips, resp.filters);
+      renderChips(resp.chips, resp.filters, resp.alternative_groups, resp.logic);
       const { html, cls } = botReplyFor(resp);
       addBotBubble({ html, cls });
     } catch (err) {
@@ -519,6 +810,8 @@
     sessionId = "s-" + Math.random().toString(36).slice(2, 10);
     localStorage.setItem("cf_session_id", sessionId);
     lastFilters = [];
+    lastAlternativeGroups = [];
+    lastLogic = "AND";
     el.chips.innerHTML = "";
     el.thread.innerHTML = "";
     addBotBubble({

@@ -242,7 +242,9 @@ def test_skill_naming_variants_all_canonicalize_to_one_spelling(synthetic):
     backend = C.get_matched_candidates(JOB_BACKEND)
     fatima = _by_name(backend, "Fatima Khan")
     # react.js / ReactJS / React JS must collapse to one consistent entry.
-    assert fatima["skills"].count("React") == 1
+    # (skills is now {name: {"years": ...}} -- see
+    # candidates._skill_years_from_experience -- so this checks the key set.)
+    assert list(fatima["skills"]).count("React") == 1
     spec = FilterSpec(logic="AND", filters=[Filter(field="skill", operator="contains", value="React")])
     out = {c["name"] for c in apply_spec(backend, spec)}
     assert "Fatima Khan" in out

@@ -9,13 +9,20 @@ __pycache__/
 # numbers), or is external reference data too large/not-ours to publish.
 # Never commit these.
 rebee_client_*.json
-data/candidates_raw.json
-data/candidates.json
 company_ranks.json
 companyDetection.json
 master_universities.csv
+master_universities_simple.csv
+master_universities_simple.csv.xlsx
 Location.json
 university_abbs.json
+
+# Skill/tool taxonomy (app/core/skill_taxonomy.py) -- info.json + its
+# per-domain files under data/ (~90MB total across 11 domains), and the
+# older Engineering-only merged_tools.json it replaces.
+info.json
+data/
+merged_tools.json
 
 # Derived from the real resume data above, so it inherits the same PII:
 # per-experience text chunks + their embeddings, and the classifier labels
@@ -23,8 +30,23 @@ university_abbs.json
 # `python scripts/build_experience_index.py`.
 experience_index/
 .embed_cache/
+# Disk memo of the company_ranks.json scan (app/core/candidates.py) -- keyed
+# to the company names found in the real resume data, so it inherits the
+# same PII. Safe to delete; it just rebuilds on the next cold start.
+.company_ranks_cache.json
+
+# Runtime-generated request log (app/core/query_log.py) -- grows unbounded
+# and, in real use, would carry real recruiter query text. Tests never
+# write here (see tests/conftest.py's QUERY_LOG_PATH redirect).
+query_log.jsonl
 
 # A separate, pre-existing prototype app pulled in for reference/investigation
 # this session -- not code we wrote, and its .env files hold real API keys
 # (OpenAI, Groq, Gemini, MongoDB URIs). Never commit it.
 prototype/
+
+# A separate, standalone GitHub repo (own .git) pulled in for a side-by-side
+# comparison this session -- not code we wrote, and git can't index a nested
+# repo as a normal directory anyway (it has no commit checked out from this
+# repo's perspective, which is exactly the `git add .` error this fixes).
+search_engine/
