@@ -54,6 +54,17 @@ class Settings:
     # thinking; thinking requires more time than the main call's timeout
     # comfortably allows for a shortlist of up to 8 candidates.
     skill_verify_timeout: float = float(os.getenv("SKILL_VERIFY_TIMEOUT", "400"))
+    # Model for skill_verify.py's specific judgment call, independent of the
+    # main `model` used for translation -- confirmed empirically on real
+    # data that a smaller/faster model (qwen3:4b) strong at the structured
+    # translation task is measurably WORSE at this different, harder
+    # reasoning task ("is this candidate's real skill list genuinely
+    # equivalent to the term asked for") -- e.g. matched lab/chemistry
+    # technicians with zero programming skills against a plain "python"
+    # search. That call is small and infrequent (a term + up to 8 skill
+    # lists, not the full system prompt), so a stronger model here stays
+    # fast even when `model` itself is set to something smaller/faster.
+    skill_verify_model: str = os.getenv("SKILL_VERIFY_MODEL", "qwen3:8b")
     # REAL BUG, found and fixed: 4096 was silently too small. The v1 system
     # prompt (rules + FEW_SHOTS, app/llm/prompt.py) alone measures ~9,400
     # tokens (confirmed: build_system_prompt() is 37,570 chars) -- with

@@ -112,13 +112,22 @@ def _skills_map(candidate: dict) -> dict[str, dict]:
         out = {}
         for name, meta in raw.items():
             if isinstance(meta, dict):
-                out[name.lower()] = meta
+                out[name.lower()] = dict(meta)
             else:  # {"Python": 5}
                 out[name.lower()] = {"years": meta}
-        return out
-    if isinstance(raw, (list, tuple)):
-        return {str(s).lower(): {"years": None} for s in raw}
-    return {}
+    elif isinstance(raw, (list, tuple)):
+        out = {str(s).lower(): {"years": None} for s in raw}
+    else:
+        out = {}
+    # Real per-skill years inferred from resume text (see
+    # candidates._extract_skill_years) -- overlays the default None above so
+    # skill_experience filters can actually resolve instead of always
+    # failing on absent data. A skill this candidate has but never
+    # mentioned in any experience's description keeps years=None (unknown),
+    # not 0 (verified none) -- see matches_filter's handling of None.
+    for skill, years in (candidate.get("skill_years") or {}).items():
+        out.setdefault(skill.lower(), {})["years"] = years
+    return out
 
 
 def _notice_days(candidate: dict):

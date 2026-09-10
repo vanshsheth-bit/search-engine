@@ -1,11 +1,21 @@
 """Deterministic tests — no LLM required. Cover engine + validation + merge."""
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from app.core.engine import apply_spec, matches_filter
 from app.core.merge import merge_alternative_groups, merge_filters, to_chips
 from app.core.validation import validate_alternative_groups, validate_filters
 from app.core.vocabulary import seniority_band
 from app.models.schemas import AlternativeGroup, Filter, FilterSpec
+
+_ROOT = os.path.join(os.path.dirname(__file__), "..")
+_requires_taxonomy = pytest.mark.skipif(
+    not os.path.isfile(os.path.join(_ROOT, "merged_tools.json")),
+    reason="merged_tools.json not present in this checkout",
+)
 
 CANDIDATES = [
     {"id": "c1", "name": "A", "match_score": 92, "location": "Mumbai",

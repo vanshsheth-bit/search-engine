@@ -30,8 +30,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field as dc_field
 from typing import Any, Iterable, Optional
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.core.vocabulary import education_rank  # noqa: E402
 
 _CORPUS_PATH = os.path.join(os.path.dirname(__file__), "corpus.jsonl")
 
@@ -135,6 +139,20 @@ def predicate_matches(expected: dict, actual: dict) -> bool:
         if _norm_scalar(expected["unit"]) != _norm_scalar(actual.get("unit") or ""):
             return False
 
+    # "education" values are a ranked scale, not free text -- the engine
+    # itself (vocabulary.education_rank) treats "PhD"/"Doctorate"/"Doctor of
+    # Philosophy" etc. as the exact same rank, so comparing them as literal
+    # strings would flag a functionally-correct answer as wrong purely over
+    # spelling (confirmed: this happened twice for real, unrelated cases --
+    # edu_003 and skc_009 -- before this normalization was added).
+    if expected.get("field") == "education":
+        if "value" in expected:
+            return education_rank(str(expected["value"])) == education_rank(str(actual.get("value")))
+        if "value_includes" in expected:
+            have = {education_rank(str(x)) for x in _as_list(actual.get("value"))}
+            want = {education_rank(x) for x in expected["value_includes"]}
+            return want.issubset(have)
+
     if "value_includes" in expected:
         have = {str(x) for x in _as_list(_norm_value(actual.get("value")))}
         want = {str(_norm_scalar(x)) for x in expected["value_includes"]}
@@ -231,7 +249,7 @@ def _check_metadata(expect: dict, predicted: dict) -> tuple[bool, list[str]]:
     """
     problems: list[str] = []
     for key in ("clarify_field", "clarify_operator", "clarify_value",
-                "clarify_skill", "clarify_unit", "lookup_field"):
+                "clarify_skill", "clarify_unit", "lookup_field", "replace_all"):
         if key not in expect:
             continue
         want, got = expect[key], predicted.get(key)

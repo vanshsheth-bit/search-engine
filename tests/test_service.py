@@ -1408,6 +1408,36 @@ def test_lookup_with_no_candidates_shown_is_honest():
     assert "search for someone first" in resp.message.lower()
 
 
+# --------------------------------------------------------------------------- #
+# _is_untracked_lookup -- regression for a confirmed live eval failure: a
+# query byte-identical to prompt.py's own "What's his email address?"
+# worked example still came back as intent LOOKUP instead of
+# UNSUPPORTED_FILTER.
+# --------------------------------------------------------------------------- #
+def test_is_untracked_lookup_matches_contact_detail_questions():
+    for q in ("what's his email address", "What is her phone number?",
+              "can I get his contact details", "do you have a resume", "his LinkedIn"):
+        assert service_module._is_untracked_lookup(q), q
+
+
+def test_is_untracked_lookup_does_not_match_real_fields():
+    for q in ("which college did he go to", "what's her notice period",
+              "where did this candidate work"):
+        assert not service_module._is_untracked_lookup(q), q
+
+
+def test_untracked_lookup_override_applies_end_to_end():
+    # A FakeLLM that (wrongly, matching the confirmed live failure) still
+    # returns LOOKUP for this -- the deterministic override must catch it
+    # before _answer_lookup ever runs, regardless of what the model said.
+    svc = make_service(LLMOutput(intent="LOOKUP", lookup_field="email"))
+    resp = svc.filter_by_query(
+        "what's his email address?", job_id=JOB, session_id="s1",
+    )
+    assert resp.status == "unsupported"
+    assert "contact" in resp.message.lower()
+
+
 def test_clarify_reply_resolves_deterministically_without_llm():
     # Regression: clicking a CLARIFY option ("2+ years") used to be re-sent
     # to the LLM with zero memory of the question -- a bare fragment like
@@ -1618,6 +1648,49 @@ def test_experience_search_intersects_with_active_structured_filter(monkeypatch)
     ids = {c["id"] for c in r2.candidates}
     assert _REAL_ID_1 in ids
     assert _REAL_ID_2 not in ids
+
+
+def test_experience_search_applies_filters_from_the_same_turn(monkeypatch):
+    """Real, reported live bug: "backend engineer who worked on X" used to
+    silently drop "backend engineer" entirely and search X alone, matching
+    non-engineers too. A single EXPERIENCE_SEARCH turn that ALSO carries
+    `filters` must apply them the same way a FILTER_CANDIDATES turn would --
+    narrowing the pool BEFORE the semantic search intersects on top, in one
+    turn, not requiring a separate prior turn to set the structured filter
+    first (that's the older, still-supported two-turn case covered by
+    test_experience_search_intersects_with_active_structured_filter above).
+
+    Real job_title data: Ganesh B Shelke ('Senior Research Engineer' among
+    his titles) matches job_title contains "Research"; Manohar Patil
+    ('Team Member', 'Scientist') does not -- so a filter that both
+    semantically match must still exclude Manohar."""
+    monkeypatch.setattr(service_module.experience_index, "index_exists", lambda *a, **k: True)
+
+    def fake_search(query, candidate_ids, top_k=20):
+        # Both real candidates match semantically...
+        return [
+            {"candidate_id": _REAL_ID_1, "score": 0.90},  # Manohar Patil
+            {"candidate_id": _REAL_ID_2, "score": 0.85},  # Ganesh B Shelke
+        ]
+    monkeypatch.setattr(service_module.experience_index, "search_candidates", fake_search)
+
+    out = LLMOutput(
+        intent="EXPERIENCE_SEARCH",
+        filters=[Filter(field="job_title", operator="contains", value="Research")],
+        experience_query="led a team",
+    )
+    svc = make_service(out)
+    resp = svc.filter_by_query(
+        "research engineers who led a team", job_id=JOB, session_id="s1",
+    )
+    ids = {c["id"] for c in resp.candidates}
+    assert _REAL_ID_2 in ids, "Ganesh (real Research title) should match"
+    assert _REAL_ID_1 not in ids, "Manohar (no Research title) must be excluded, not just ranked lower"
+
+    # The structured filter must show up as a real chip too, not just
+    # silently narrow the pool -- the recruiter should see WHY.
+    assert any(c.field == "job_title" for c in resp.chips)
+    assert any(f.field == "job_title" and f.value == "Research" for f in resp.filters)
 
 
 # --------------------------------------------------------------------------- #

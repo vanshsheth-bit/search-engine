@@ -44,6 +44,7 @@ def _llm_output_to_dict(out) -> dict:
     return {
         "intent": out.intent,
         "logic": out.logic,
+        "replace_all": out.replace_all,
         "filters": [f.model_dump(exclude_none=True) for f in out.filters],
         "clarify_field": out.clarify_field,
         "clarify_skill": out.clarify_skill,
@@ -80,7 +81,7 @@ def run_self_check(cases: list[Case]) -> list[CaseResult]:
                 preds.append(pred)
             predicted["filters"] = preds
         for key in ("clarify_field", "clarify_operator", "clarify_value",
-                    "clarify_skill", "clarify_unit", "lookup_field"):
+                    "clarify_skill", "clarify_unit", "lookup_field", "replace_all"):
             if key in c.expect:
                 predicted[key] = c.expect[key]
         if c.expect.get("message_mentions"):

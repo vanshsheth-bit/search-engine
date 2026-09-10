@@ -267,6 +267,25 @@ GENERIC_FILLER_WORDS = {
     "reputable", "quality", "any", "some", "a", "an", "the",
 }
 
+# Same class of failure as GENERIC_FILLER_WORDS above, but for "skill" --
+# confirmed live: the bare query "Skills" (naming no specific technology at
+# all) got parsed as {"field":"skill","operator":"contains","value":"Skills"},
+# a literal search for a skill named "Skills". No exact match exists for
+# that (nobody has a skill literally called "Skills"), but the fuzzy/
+# semantic-widening pipeline then treated the meaningless term as if it
+# were real, embedding it and asking an LLM judge whether each shortlisted
+# candidate's real skills "satisfy" a term that names nothing -- and it
+# said yes for several, producing a confident-looking but meaningless
+# result. These words describe the CONCEPT of having a skill, never a
+# specific technology/tool -- a real skill value is never just one of
+# these on its own.
+GENERIC_SKILL_FILLER_WORDS = {
+    "skill", "skills", "experience", "expertise", "knowledge", "abilities",
+    "ability", "competency", "competencies", "technology", "technologies",
+    "tech", "tool", "tools", "capability", "capabilities", "proficiency",
+    "proficiencies", "qualification", "qualifications",
+}
+
 
 VALID_INTENTS = {
     "FILTER_CANDIDATES", "CLARIFY", "UNSUPPORTED_FILTER", "LOOKUP",

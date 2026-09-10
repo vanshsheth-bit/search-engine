@@ -395,13 +395,30 @@ def _resolve_canonical(term: str, fuzzy: bool = True) -> str | None:
     return _fuzzy_typo_match(term) if fuzzy else None
 
 
+# Confirmed live: expanding "Kubernetes" (a tool with unusually rich
+# taxonomy data) with NO cap on related_tools pulled in 66 items -- not
+# just Kubernetes' own aliases (safe, same technology, e.g. "k8s",
+# "kubectl") but genuinely DIFFERENT, merely-commonly-adjacent tools
+# (Docker, Helm, Prometheus, Grafana, Rancher, ...). A candidate with ONLY
+# Prometheus (a monitoring tool) would wrongly satisfy a filter meant to
+# mean "Kubernetes or Terraform". This directly contradicts rule 3's own
+# stated guidance elsewhere in this prompt ("4-6 CONCRETE, real, well-known
+# technologies") -- the expansion logic itself had no such limit. Capping
+# related_tools (never the alias list -- an alias is always the exact same
+# technology by definition, unlimited and always safe) keeps every
+# umbrella-concept expansion this small, bounded, more precise set,
+# matching what the prompt already promises the recruiter.
+_MAX_RELATED_TOOLS = 6
+
+
 def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list[str] | None:
     """If `term` (a tool name, or any of its aliases) is in the taxonomy,
-    return [canonical name, concrete related tools >= min_weight] -- the
-    canonical name plus real, DISTINCT technologies that satisfy the
-    concept. Returns None (not []) when the term isn't covered at all, so
-    callers can distinguish "found, no strong related tools" from "taxonomy
-    has nothing to say -- fall back to the LLM's own knowledge".
+    return [canonical name, up to _MAX_RELATED_TOOLS concrete related tools
+    >= min_weight] -- the canonical name plus a small, bounded set of real,
+    DISTINCT technologies that satisfy the concept. Returns None (not [])
+    when the term isn't covered at all, so callers can distinguish "found,
+    no strong related tools" from "taxonomy has nothing to say -- fall back
+    to the LLM's own knowledge".
 
     Does NOT include the term's own ALIASES (near-duplicate self-referential
     phrasings, e.g. "machine learning" -> "ML pipeline", "ML system",
@@ -423,7 +440,12 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
     related-tools portion, same curated exclusion related_terms_for already
     applies and for the identical reason: a library that's "related" to
     nearly everything in its ecosystem is useless signal for "did this
-    person do the specific thing asked about".
+    person do the specific thing asked about". And caps the related-tools
+    portion to _MAX_RELATED_TOOLS -- confirmed live, "Kubernetes" (a tool
+    with unusually rich taxonomy data) with no cap pulled in 66 items, not
+    just close siblings but genuinely different, merely-commonly-adjacent
+    tools (Docker, Helm, Prometheus, Grafana, Rancher, ...) that would
+    wrongly satisfy a filter meant to mean "Kubernetes or Terraform".
 
     Recognizes `term` wrapped in a generic noise word too ("machine
     learning concepts" resolves exactly like "machine learning") -- see
@@ -434,10 +456,14 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
         return None
 
     expanded = [canonical]
-    expanded.extend(
+    # canonical_to_related is already sorted by weight descending (see
+    # _load_taxonomy) -- taking the first _MAX_RELATED_TOOLS after the
+    # threshold/generic-lib filter keeps the highest-relevance related
+    # tools, not an arbitrary subset.
+    expanded.extend([
         rtool for rtool, weight in canonical_to_related.get(canonical, [])
         if weight >= min_weight and _norm(rtool) not in _GENERIC_SUPPORT_LIBS
-    )
+    ][:_MAX_RELATED_TOOLS])
     # de-dupe, preserve order (canonical first, most-relevant related next)
     seen, out = set(), []
     for t in expanded:

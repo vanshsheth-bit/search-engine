@@ -75,7 +75,15 @@ class AlternativeGroup(BaseModel):
 
     Every filter here is forced hard=True at validation time (see
     validation.validate_alternative_groups) -- a soft preference has no
-    meaning inside an eligibility route; a route is satisfied or not."""
+    meaning inside an eligibility route; a route is satisfied or not.
+
+    (A parallel, independently-built implementation of this same "either
+    requirement route A or B" idea existed briefly on another branch shaped
+    as ONE group holding `branches: list[list[Filter]]` instead of one
+    group per route -- semantically equivalent, reconciled to this shape
+    since the rest of this codebase's alternative_groups handling --
+    merge_alternative_groups's wholesale-replace semantics, the seniority-
+    band feature, every existing test -- was already built around it.)"""
     filters: list[Filter] = Field(default_factory=list)
 
 
@@ -204,16 +212,28 @@ class LLMOutput(BaseModel):
     # specific in their work (a project, responsibility, achievement) that
     # isn't a named skill/tool/title/certification, e.g. "led a team of
     # engineers", "built a payment processing system". This has no
-    # structured field to translate into -- it's matched against the actual
-    # sentences of each candidate's real job history via semantic search
-    # (see app/core/experience_index.py), not a filter. experience_query is
-    # the phrase to search for, in the recruiter's own words -- pass it
-    # through close to verbatim, don't try to normalize it into a keyword.
-    # v1 scope: EXPERIENCE_SEARCH stands alone, it does not also carry
-    # ordinary `filters` in the same turn -- a compound ask ("Python devs
-    # who led a team") should still emit EXPERIENCE_SEARCH (the harder,
-    # more specific part), not silently drop it in favor of the plain skill
-    # filter.
+    # SINGLE structured field to translate into on its own -- it's matched
+    # against the actual sentences of each candidate's real job history via
+    # semantic search (see app/core/experience_index.py), not a filter.
+    # experience_query is the phrase to search for, in the recruiter's own
+    # words -- pass it through close to verbatim, don't try to normalize it
+    # into a keyword.
+    #
+    # A compound ask CAN also carry ordinary `filters` in the SAME turn when
+    # the query separately names a real structured requirement alongside the
+    # achievement -- e.g. "backend engineers who worked on a supply chain
+    # platform" names BOTH a job_title AND an achievement. Put the
+    # structured part in `filters` exactly as FILTER_CANDIDATES would, and
+    # the achievement phrase in `experience_query`, still under intent
+    # EXPERIENCE_SEARCH (the achievement is the harder, more specific part
+    # that decides the intent) -- the backend applies both: `filters`
+    # narrows the pool first, `experience_query` semantically searches
+    # within it (see service.py's _answer_experience_search). Confirmed
+    # live this used to be silently dropped entirely: "backend engineer who
+    # worked on X" only ever searched X, matching non-engineers too. Only
+    # emit `filters` here for a genuine separate requirement named in the
+    # SAME sentence -- don't invent one, same rule 6a-i discipline as
+    # everywhere else.
     experience_query: Optional[str] = None
 
 

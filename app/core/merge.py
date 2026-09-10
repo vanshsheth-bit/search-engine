@@ -100,8 +100,9 @@ def _chip_label_text(f: Filter) -> str:
         prefix = "Not " if f.operator in {"not_contains", "not_in", "not_equals"} else ""
         return f"{icon} {prefix}{label}-based".strip()
     if f.field == "job_title":
-        prefix = "Not " if f.operator in {"not_contains", "not_equals"} else ""
-        return f"{icon} {prefix}{f.value}".strip()
+        prefix = "Not " if f.operator in {"not_contains", "not_equals", "not_in"} else ""
+        label = " or ".join(f.value) if isinstance(f.value, list) else f.value
+        return f"{icon} {prefix}{label}".strip()
     if f.field == "certification":
         prefix = "No " if f.operator in {"not_contains", "not_equals"} else ""
         return f"{icon} {prefix}{f.value}".strip()
@@ -109,7 +110,11 @@ def _chip_label_text(f: Filter) -> str:
         sym = _OP_SYMBOL.get(f.operator, "")
         return f"{icon} Gap {sym} {f.value} mo".strip()
     prefix = "Not " if f.operator in {"not_equals", "not_contains", "not_in"} else ""
-    return f"{icon} {prefix}{f.value}".strip()
+    # Generic fallback for any other field (e.g. domain, location) -- an
+    # "in" filter carries a list of alternative values here; show them
+    # joined rather than a raw Python list repr.
+    label = "/".join(f.value) if isinstance(f.value, list) else f.value
+    return f"{icon} {prefix}{label}".strip()
 
 
 def chip_label(f: Filter) -> str:

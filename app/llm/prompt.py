@@ -137,6 +137,47 @@ FEW_SHOTS = [
                                 "Jenkins", "Ansible", "CI/CD"]}]},
     ),
     (
+        # Same lesson again for the ABBREVIATED form specifically -- "AI"/
+        # "ML" bare as a literal "contains" would under-match (confirmed:
+        # on real data, almost nobody has the literal 2-character token
+        # "AI" or "ML" as a skill; real resumes name the actual tools) AND
+        # a bare 2-3 character term is too short/ambiguous for the
+        # embedding-similarity fallback to safely widen on its own
+        # (confirmed live: a QA/performance-testing candidate with ZERO
+        # real AI/ML skills scored HIGHEST of anyone for a bare "AI"
+        # query) -- so this one needs the deterministic taxonomy expansion
+        # as its PRIMARY path, not a fallback.
+        "CURRENT FILTERS: []\nNEW QUERY: engineers with AI/ML skills",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "job_title", "operator": "contains", "value": "engineer"},
+                     {"field": "skill", "operator": "in",
+                      "value": ["AI/ML", "machine learning", "TensorFlow",
+                                "PyTorch", "scikit-learn"]}]},
+    ),
+    (
+        # Confirmed live: with FOUR different field types crammed into one
+        # sentence (degree level, job title, a named skill, AND an umbrella
+        # concept), "machine learning" degraded into a bare "contains" --
+        # matching literally nobody, since real resumes list the actual
+        # tools (TensorFlow, PyTorch, ...), never the literal phrase
+        # "machine learning" (confirmed: 0 of 99 real candidates in this
+        # dataset have it as a literal skill string). Same lesson as the
+        # company_type compound example below: a rule that's correctly
+        # followed in a simple query must NOT quietly drop out once several
+        # OTHER things also need to be gotten right in the same sentence --
+        # every rule in this prompt stays in force regardless of how many
+        # other concepts share the sentence with it.
+        "CURRENT FILTERS: []\nNEW QUERY: Find PhD-level data scientists with "
+        "Python and machine learning skills",
+        {"intent": "FILTER_CANDIDATES", "logic": "AND",
+         "filters": [{"field": "education", "operator": "gte", "value": "Doctorate"},
+                     {"field": "job_title", "operator": "contains", "value": "data scientist"},
+                     {"field": "skill", "operator": "contains", "value": "Python"},
+                     {"field": "skill", "operator": "in",
+                      "value": ["machine learning", "TensorFlow", "PyTorch",
+                                "scikit-learn", "Keras"]}]},
+    ),
+    (
         # SAME field ("skill" either way) -> one "in" filter, not logic
         # "OR" with two separate filters (see rule 4) -- the OR-with-
         # separate-filters shape is only for a genuine cross-field
@@ -255,6 +296,19 @@ FEW_SHOTS = [
          "question": "What minimum years of experience should I use?",
          "options": ["2+ years", "3+ years", "5+ years"],
          "clarify_field": "experience", "clarify_operator": "gte"},
+    ),
+    (
+        # Rule 3-i, CONFIRMED LIVE FAILURE: the bare word "Skills" (no
+        # actual technology named at all) got parsed as a literal skill
+        # value, {"field":"skill","operator":"contains","value":"Skills"}
+        # -- meaningless, since nobody has a skill literally called
+        # "Skills". No clarify_field here (unlike the "experienced"
+        # example above) -- which SKILL is wanted isn't a threshold on one
+        # field, it's an entirely open question with no useful default
+        # options to offer.
+        "CURRENT FILTERS: []\nNEW QUERY: Skills",
+        {"intent": "CLARIFY",
+         "question": "Which specific skill or technology are you looking for?"},
     ),
     (
         # Unlike "experienced" above (a genuinely undefined amount), a named
@@ -654,6 +708,52 @@ RULES:
    ("knows Python", "has AWS") -- those stay a plain "contains" with that
    one value; only expand a genuine umbrella concept, never a specific
    product name.
+3-i. If the query is JUST a generic, meta word that describes having a
+   skill in general ("skills", "experience", "expertise", "knowledge",
+   "technology") with NO actual technology, tool, or concept named at
+   all, that is not a real value for the "skill" field -- it isn't a
+   skill, it's the WORD for the category "skill" itself. CONFIRMED LIVE
+   FAILURE: the bare query "Skills" got parsed as
+   {{"field":"skill","operator":"contains","value":"Skills"}} -- a
+   literal search for a skill named "Skills", which names nothing real
+   and can only ever produce meaningless results. Return "CLARIFY"
+   asking which specific skill they mean, instead.
+3b. TWO OR MORE specific named tools requested TOGETHER ("Agile + Jira",
+   "Python and Django", "knows Docker, Kubernetes, and Terraform") are NOT
+   an umbrella concept -- the recruiter is naming exact, distinct
+   requirements, all of which the candidate must have (this is a "+"/"and"
+   listing several concrete answers, not one vague concept with several
+   possible answers -- contrast rule 3's exception just above, which is
+   about a SINGLE broad word standing in for tools it doesn't itself name).
+   Confirmed live: "Agile + Jira" was wrongly emitted as ONE filter,
+   operator "in", value ["Agile", "Jira"] -- "in" means "has ANY ONE of
+   these", so it matched candidates with Agile alone or Jira alone,
+   silently including people missing one of the two explicitly-requested
+   tools (confirmed against real data: 8 of 14 results that way had only
+   ONE of the two). The correct shape is a SEPARATE "contains" filter per
+   named tool (same as "knows Python and React"), which the default "AND"
+   logic combines into "must have every one of them" -- exactly like any
+   other multi-filter compound query, not a special case. Reserve operator
+   "in" with a list value STRICTLY for the umbrella-concept expansion in
+   rule 3 above (one concept word -> several alternative tools, ANY ONE
+   satisfies it) or for an explicit "either/or" (rule 4) -- never for a
+   plain list of specific tools the recruiter named directly.
+3c. Several ALTERNATIVE VALUES for the SAME field ("Mumbai, Pune, or
+   Bangalore", "fintech, banking, or payments", "from Google, Microsoft,
+   or Amazon") -> ONE filter, operator "in", value = the list of
+   alternatives -- NEVER separate same-field filters. Separate same-field
+   filters combine under the query's AND logic into "must be ALL of them
+   simultaneously", which is impossible for almost every field: a
+   candidate has exactly ONE current location, and cannot be in Mumbai
+   AND Pune AND Bangalore at once. Confirmed live: "prefer candidates ...
+   in Mumbai, Pune, or Bangalore" was emitted as THREE separate "location"
+   "equals" filters, guaranteeing zero matches from that clause alone no
+   matter who exists in the real data -- same failure, separately, for
+   "fintech, banking, or payments" as three separate "domain" filters.
+   This is safe and correct for ANY field EXCEPT "skill" specifically when
+   the alternatives are SPECIFIC NAMED TOOLS (not a rule-3 umbrella
+   concept) -- see rule 4 just below for why that one case needs a
+   different mechanism.
 4. "either A or B" is handled differently depending on whether A/B are the
    SAME field or genuinely DIFFERENT fields:
    - SAME field (e.g. "Kubernetes or Terraform", "fintech, banking, or
@@ -870,6 +970,46 @@ RULES:
    modifier the recruiter is searching for as a resume-stated role ("Senior
    DevOps Engineer", "DevOps Team Lead"), or an explicit "worked as a
    .../held the title..." framing.
+6f-i-a. Recruiters commonly type a role in ABBREVIATED/shorthand form
+   ("engg", "eng", "mgr", "sr", "sr.", "jr", "jr.") -- real resumes almost
+   never store a title that way, they spell the word out ("Engineer",
+   "Manager", "Senior", "Junior"). CONFIRMED LIVE FAILURE: "backend engg"
+   was emitted verbatim as {{"field":"job_title","operator":"contains",
+   "value":"backend engg"}} -- matching 0 of 103 real candidates, even
+   though 4 of them are real Backend Engineers with 5+ years (titled
+   "Senior Backend Engineer", "Lead Backend Engineer", etc.) -- the literal
+   abbreviation shares no substring with the real stored word, so "contains"
+   can never bridge it no matter how the match itself works. ALWAYS expand
+   a shorthand role word to its standard full spelling in the "value" you
+   emit -- "backend engg" -> "Backend Engineer", "sr mgr" -> "Senior
+   Manager" -- never pass the recruiter's abbreviated spelling straight
+   through as if it were the literal value to search for.
+6f-i-b. EXCEPTION to 6f-i: "<a specific named technology> developer/dev"
+   ("Python developer", "React developer", "Kubernetes dev") is NOT a
+   literal job title -- it describes what someone builds WITH, not a title
+   people are actually called. CONFIRMED on real data: 0 of 103 real
+   candidates in one dataset had "python developer" (or any tech name +
+   "developer") as a literal job title, while 40 of them had Python as a
+   real, declared skill -- real titles are things like "Software
+   Developer", "Data Analyst", "Systems Engineer", never "<Tool> Developer"
+   verbatim. Route this as field "skill", operator "contains", value = the
+   named technology ONLY -- do NOT also add a job_title filter for
+   "developer" (confirmed worse, not safer: requiring the literal word
+   "developer" in job_title drops the same real query from 40 matches to
+   16, since most people who use a given tool are titled something else
+   entirely). This is DIFFERENT from a GENUINE standalone job title that
+   happens to end in "Engineer" ("DevOps Engineer", "ML Engineer", "Data
+   Engineer", "QA Engineer", "Site Reliability Engineer" -- see the "PhD-
+   level data scientists" example above, which correctly keeps "data
+   scientist" as job_title) -- those ARE real, established title
+   conventions in their own right, not a generic-role-noun standing in for
+   a skill, and must stay job_title exactly as rule 6f-i says. The
+   distinguishing test: would a real resume plausibly use the FULL PHRASE
+   as its actual title (keep as job_title), or is the phrase just "someone
+   who works with <tool>" using a generic, interchangeable placeholder word
+   (route to skill instead)? "developer"/"dev" is almost always the second
+   case when directly preceded by one specific named tool; "engineer" on
+   its own compound ("X Engineer") is usually the first.
 6f-ii. "certification" = a formal certificate/credential someone HOLDS
    ("AWS Certified", "PMP", "certified Scrum Master") -> field
    "certification", operator "contains", value = the certification/technology

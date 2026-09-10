@@ -725,6 +725,32 @@ def _query_signals_narrowing(query: str) -> bool:
     return bool(_NARROWING_PHRASE_RE.search(query))
 
 
+# Contact-detail fields this dataset never tracks at all (not "hard to
+# answer", genuinely absent from every candidate record) -- confirmed live:
+# "what's his email address" resolved to intent LOOKUP with
+# lookup_field="email", which _answer_lookup then had no way to honestly
+# decline (it only knows how to report ALLOWED_FIELDS values, "email" isn't
+# one). Caught here, deterministically, before _answer_lookup ever runs --
+# regardless of what the model's own intent/lookup_field said -- since the
+# model has repeatedly been observed to route a contact-detail question as
+# LOOKUP anyway despite prompt.py's own worked example for this exact case.
+_UNTRACKED_LOOKUP_RE = re.compile(
+    r"\b(email|e-mail|phone( number)?|contact( details?| info(rmation)?)?"
+    r"|linkedin|resume|r[ée]sum[ée]|cv|github|portfolio)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_untracked_lookup(query: str) -> bool:
+    """True when `query` asks about a contact/identity detail this dataset
+    has no field for at all (email, phone, contact info, LinkedIn, resume/
+    CV, GitHub, portfolio) -- as opposed to a real, tracked field (college,
+    notice period, work history, ...) that never matches any of these
+    specific terms, e.g. "which college did he go to" or "what's her
+    notice period" are untouched."""
+    return bool(_UNTRACKED_LOOKUP_RE.search(query))
+
+
 # A REQUIRED qualifier word immediately before it makes the overall 2-word
 # phrase distinctive enough to reclassify safely -- but "tier" alone is
 # only 4 letters, too short for open-ended edit-distance fuzzy matching
@@ -1176,13 +1202,45 @@ class FilterService:
             )
 
         if llm_out.intent == "LOOKUP":
+            if _is_untracked_lookup(query):
+                message = "This data doesn't track contact details (email, phone, LinkedIn, etc.)."
+                self.store.set(session_id, job_id, SessionState(
+                    spec=spec, last_candidates=current.last_candidates,
+                    history=_append_history(current.history, query, message),
+                ))
+                return FilterResponse(
+                    status="unsupported", message=message,
+                    logic=spec.logic, filters=spec.filters, chips=to_chips(spec.filters),
+                )
             return self._answer_lookup(
                 llm_out, current, spec, job_id, session_id, query,
             )
 
         if llm_out.intent == "EXPERIENCE_SEARCH":
+            # Real, reported live bug: "backend engineers who worked on a
+            # supply chain platform" (a compound ask naming BOTH a real
+            # structured requirement AND an achievement, in the SAME turn)
+            # silently dropped "backend engineers" entirely and searched the
+            # achievement phrase alone, matching non-engineers too --
+            # `llm_out.filters` was never merged into the spec this call
+            # actually narrows the pool with, only a filter set ALREADY
+            # active from an earlier turn was. Merge this turn's own
+            # `filters` in first, exactly like FILTER_CANDIDATES would,
+            # before narrowing/searching -- `llm_out.filters` here is
+            # already v1-resolved shape regardless of prompt schema (v2's
+            # EXPERIENCE_SEARCH doesn't populate structured/tools).
+            experience_spec = spec
+            if llm_out.filters:
+                merged_filters = (
+                    llm_out.filters if llm_out.replace_all
+                    else merge_filters(spec.filters, llm_out.filters)
+                )
+                experience_spec = FilterSpec(
+                    logic=spec.logic, filters=merged_filters,
+                    alternative_groups=spec.alternative_groups,
+                )
             return self._answer_experience_search(
-                llm_out, current, spec, job_id, session_id, query,
+                llm_out, current, experience_spec, job_id, session_id, query,
             )
 
         # FILTER_CANDIDATES. Two ways to arrive at a resolved filter list,
@@ -1547,7 +1605,9 @@ class FilterService:
             [(c["name"], c["experience_match_score"]) for c in matched[:20]],
         )
 
-        chips = [Chip(label=f'\U0001f50e "{llm_out.experience_query}"', field="experience_query")]
+        chips = to_chips(spec.filters) + [
+            Chip(label=f'\U0001f50e "{llm_out.experience_query}"', field="experience_query"),
+        ]
         summary = (
             f'Found {len(matched)} matching "{llm_out.experience_query}"' if matched
             else f'No one matched "{llm_out.experience_query}"'
