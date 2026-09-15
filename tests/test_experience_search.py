@@ -143,7 +143,7 @@ def test_search_candidates_restricts_before_ranking(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         experience_index, "default_cache",
-        lambda: type("FakeCache", (), {"embed": staticmethod(lambda texts: query_vec.reshape(1, -1))})(),
+        lambda: type("FakeCache", (), {"embed": staticmethod(lambda texts, **kw: query_vec.reshape(1, -1))})(),
     )
 
     # top_k=5 -- if restriction happened AFTER ranking, the 28 closer
@@ -159,7 +159,7 @@ def test_search_candidates_returns_one_result_per_candidate(tmp_path, monkeypatc
     query_vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     monkeypatch.setattr(
         experience_index, "default_cache",
-        lambda: type("FakeCache", (), {"embed": staticmethod(lambda texts: query_vec.reshape(1, -1))})(),
+        lambda: type("FakeCache", (), {"embed": staticmethod(lambda texts, **kw: query_vec.reshape(1, -1))})(),
     )
     # Two chunks for the SAME candidate (multi-experience), different
     # scores -- only the best one should be returned, once.

@@ -203,7 +203,14 @@ def _score_chunks(query: str, directory: Path | str = INDEX_DIR) -> tuple[list[d
     vectors = load_vectors(directory)
     if not chunks or vectors.size == 0:
         return [], np.zeros(0)
-    query_vec = l2_normalize(default_cache().embed([query]))[0]
+    # task="search_query" -- these vectors were indexed with the matching
+    # task="search_document" prefix (see scripts/build_experience_index.py's
+    # embed_chunks); nomic-embed-text's own asymmetric-retrieval convention,
+    # confirmed live to fix real vs false-positive score ordering (see
+    # EmbeddingCache.embed's docstring). Both sides must agree, or the
+    # vectors live in mismatched embedding spaces and similarity is
+    # meaningless -- never call this with one prefixed and not the other.
+    query_vec = l2_normalize(default_cache().embed([query], task="search_query"))[0]
     scores = l2_normalize(vectors) @ query_vec
     return chunks, scores
 

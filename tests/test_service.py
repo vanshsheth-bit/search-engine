@@ -571,17 +571,29 @@ def test_experience_text_search_does_not_reduce_a_2word_phrase_to_a_bare_common_
 
 
 def test_experience_text_search_skips_a_spurious_single_word_untracked_skill(monkeypatch):
-    # Real, reported live bug: a compound query ("mid-level backend
-    # engineer familiar with Node.js or Django...") caused the model to
-    # ALSO emit a spurious `skill contains "backend"` filter -- a bare,
-    # common English word, not a real tool, already covered by the same
-    # query's own `job_title contains "backend engineer"`. Without a
-    # multi-word floor, this would free-text-search "backend" against
-    # nearly every engineering resume (same false-positive class as
-    # "payment"-from-"payment system"). A single-word untracked term must
-    # get NO widening at all here -- silent, same as
-    # _reclassify_skill_as_domain_when_its_a_position's existing
-    # single-word-stays-silent note behavior.
+    # Real, reported live bug (original form): a compound query ("mid-level
+    # backend engineer familiar with Node.js or Django...") caused the model
+    # to ALSO emit a spurious `skill contains "backend"` filter -- a bare,
+    # common English word, already covered by the same query's own
+    # `job_title contains "backend engineer"`. The risk this guards against
+    # is a FREE-TEXT substring search matching "backend" against nearly any
+    # engineering resume's prose (same false-positive class as "payment"-
+    # from-"payment system") -- this fake candidate's experience_text says
+    # "Tested backend APIs" but they are NOT a backend engineer.
+    #
+    # UPDATED, separately-confirmed-live bug fixed the same session as this
+    # test's assertion below: "backend" (and other bare practice-area words)
+    # is not free-text-searched at all any more -- it's reclassified into a
+    # structured `domain contains "backend"` filter (see
+    # _reclassify_skill_as_domain_when_its_a_position; 0 real candidates on
+    # job 00000103 have "backend" as a literal skill tag, so this is safe --
+    # contrast test_results_rank_exact_before_fuzzy_full_before_partial's
+    # "Agile", which genuinely IS a real literal skill tag and is correctly
+    # excluded from this same widening via _real_literal_skill_terms).
+    # This fake candidate has no `domain` data at all, so the ORIGINAL
+    # protection still holds -- they correctly get ZERO matches -- but now
+    # via structured-field absence, not a free-text miss, and WITH an honest
+    # explanation instead of silence.
     fake_candidates = [
         {"id": "c1", "name": "Unrelated Backend Mention",
          "skills": {}, "job_title": ["QA Analyst"],
@@ -593,7 +605,8 @@ def test_experience_text_search_skips_a_spurious_single_word_untracked_skill(mon
     svc = make_service(out)
     resp = svc.filter_by_query("backend engineer", job_id=JOB_DEVOPS, session_id="s1")
     assert resp.status == "no_match"
-    assert resp.message is None or "backend" not in (resp.message or "")
+    assert resp.filters == [Filter(field="domain", operator="contains",
+                                    value="backend", hard=True)]
 
 
 def test_payment_system_false_positive_fix_on_the_real_dataset():
@@ -784,7 +797,20 @@ def test_domain_only_query_offers_real_skill_choices():
         logic="AND",
     ))
     assert apply_resp.status == "ok"
-    assert all("Docker" in skill_names_of(c) for c in apply_resp.candidates)
+    # domain is now credit-eligible for partial-match the same way skill
+    # already was (see _fuzzy_skill_matches) -- a candidate hitting ONE of
+    # {domain="DevOps", skill=Docker} but not the other is shown as a
+    # partial match, honestly labeled with whichever one is missing, rather
+    # than silently excluded. Full matches (no partial_skill_match tag)
+    # must still ALL have Docker literally; partial matches may be missing
+    # exactly Docker (matched via DevOps domain instead) or exactly "DevOps
+    # experience" (matched via Docker instead).
+    full = [c for c in apply_resp.candidates if not c.get("partial_skill_match")]
+    assert full and all("Docker" in skill_names_of(c) for c in full)
+    for c in apply_resp.candidates:
+        pm = c.get("partial_skill_match")
+        if pm:
+            assert pm["missing"] in (["Docker"], ["DevOps experience"])
 
 
 def test_domain_only_query_skips_skill_pick_when_no_real_overlap():
@@ -1010,10 +1036,17 @@ def test_results_rank_exact_before_fuzzy_full_before_partial():
     # match_score happened to be higher -- confirmed live on job_id=00000103
     # for "Project Managers: Agile + Jira, 10+ years": Anthony Carthen Cell
     # (Jira satisfied only via a related tool) sorted FIRST, ahead of 6 real
-    # exact matches, before this fix. Real data: 6 exact (job_title,
-    # experience, AND both skills literally), 1 fuzzy-full (Anthony Carthen
-    # Cell -- Jira via a related tool), 7 partial (Agile or Jira but not
-    # both). Tiers must never interleave regardless of match_score.
+    # exact matches, before this fix. Tiers must never interleave regardless
+    # of match_score.
+    #
+    # UPDATED counts: job_title is now credit-eligible for partial-match the
+    # same way skill already was (real, explicit request -- a candidate
+    # hitting every skill but missing the stated role no longer vanishes
+    # outright). Real data: 6 exact (job_title, experience, AND both skills
+    # literally), 1 fuzzy-full (Anthony Carthen Cell -- Jira via a related
+    # tool, title still literal), 32 partial (missing exactly one of job_title/
+    # Agile/Jira -- previously only 7, since a job_title mismatch used to be
+    # an outright exclusion rather than partial credit).
     out = LLMOutput(intent="FILTER_CANDIDATES", logic="AND",
                     filters=[
                         Filter(field="job_title", operator="contains", value="Project Manager"),
@@ -1025,13 +1058,17 @@ def test_results_rank_exact_before_fuzzy_full_before_partial():
     resp = svc.filter_by_query(
         "Project Managers: Agile + Jira, 10+ years", job_id=JOB_DEVOPS, session_id="s1",
     )
-    assert resp.showing == 14
+    assert resp.showing == 39
+    # partial_skill_match takes precedence in classification: a partial-tier
+    # candidate can ALSO carry a fuzzy_skill_match tag (matched one skill via
+    # a related tool while missing another requirement entirely) without
+    # that promoting them out of the partial tier.
     tiers = [
-        "fuzzy" if c.get("fuzzy_skill_match") else "partial" if c.get("partial_skill_match") else "exact"
+        "partial" if c.get("partial_skill_match") else "fuzzy" if c.get("fuzzy_skill_match") else "exact"
         for c in resp.candidates
     ]
     assert tiers == (
-        ["exact"] * 6 + ["fuzzy"] * 1 + ["partial"] * 7
+        ["exact"] * 6 + ["fuzzy"] * 1 + ["partial"] * 32
     )
 
 

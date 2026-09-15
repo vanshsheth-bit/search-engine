@@ -320,6 +320,30 @@ def _strip_domain_noise_suffix(term: str) -> str | None:
     return None
 
 
+def _domain_anchor_term(term: str) -> str | None:
+    """The core concept word(s) `term` is really about, for use as a literal
+    presence GATE ahead of semantic ranking (see _experience_text_matches'
+    semantic-fallback block) -- e.g. "banking system" -> "banking". Strips
+    EVERY trailing generic noise word (not just one, and with no 2+-word
+    floor), unlike _strip_domain_noise_suffix: that function's 2+-word floor
+    exists because ITS output is presented as a full-confidence, no-caveat
+    exact-phrase match (see its own docstring for the confirmed "payment
+    system" -> "payment" false-positive this avoids there) -- a bare word
+    alone isn't trustworthy enough for that. Here the result only decides
+    who is ELIGIBLE for the semantic fallback tier, which is already
+    labeled `possible_experience_match` (unconfirmed, ranked lowest, capped
+    at _MAX_POSSIBLE_EXPERIENCE_MATCHES) -- the same bare word that would be
+    too weak to silently confirm a match is exactly strong enough to narrow
+    "who might this be about" before embeddings decide how well, per the
+    ranking pipeline: literal gate -> semantic rank -> top N. Returns None
+    only if stripping consumes the entire phrase (all-noise-words edge
+    case), signaling "no real concept to gate on" to the caller."""
+    words = term.split()
+    while len(words) > 1 and words[-1].lower() in _DOMAIN_NOISE_SUFFIXES:
+        words = words[:-1]
+    return " ".join(words) if words else None
+
+
 def _phrase_patterns(term: str) -> list:
     """[exact phrase, plural-tolerant variant] -- real, reported miss:
     Ahmed Sadig's own resume literally says "payment systems" (plural), but
@@ -332,6 +356,34 @@ def _phrase_patterns(term: str) -> list:
     if not term.lower().endswith("s"):
         patterns.append(mention_pattern(term + "s"))
     return patterns
+
+
+@lru_cache(maxsize=1)
+def _real_literal_skill_terms() -> frozenset[str]:
+    """Every literal skill string actually present in ANY real candidate's
+    `skills` dict across the full dataset, lowercased -- a superset of
+    skill_taxonomy's ~14,774 curated tool names, since a resume's real skill
+    list can carry arbitrary free-text entries the curated taxonomy never
+    claims to cover.
+
+    Real, reported regression this guards against: "Agile" isn't a known
+    tool (skill_taxonomy.is_known_tool("Agile") is False) yet IS a literal
+    skill tag for 14 real candidates on job 00000103 (confirmed via
+    test_results_rank_exact_before_fuzzy_full_before_partial, itself sourced
+    from real live data) -- and "agile" also happens to be a substring of
+    the real subdomain "Agile & Delivery Management". Without this check,
+    _reclassify_skill_as_domain_when_its_a_position's substring-against-
+    subdomain-names widening (added for the "backend" bug below, where 0
+    real candidates have a literal "backend" skill tag) would ALSO fire for
+    "Agile", discarding 14 real exact/fuzzy/partial literal-skill matches in
+    favor of an unrelated domain-classification population instead. Checked
+    before that widening fires, the same way is_known_tool already is."""
+    from app.core.candidates import _load_resumes_by_process_id
+    terms: set[str] = set()
+    for cand in _load_resumes_by_process_id().values():
+        for name in (cand.get("skills") or {}):
+            terms.add(str(name).lower())
+    return frozenset(terms)
 
 
 def _reclassify_skill_as_domain_when_its_a_position(
@@ -397,6 +449,7 @@ def _reclassify_skill_as_domain_when_its_a_position(
     subdomains = _load_subdomain_names()
     if not subdomains:
         return filters, None
+    real_skills = _real_literal_skill_terms()
 
     out, notes = [], []
     for f in filters:
@@ -425,6 +478,32 @@ def _reclassify_skill_as_domain_when_its_a_position(
             continue
         real_name = subdomains.get(term.lower())
         if real_name is None:
+            # Real, reported gap: "backend"/"frontend" etc. is a genuine
+            # practice-area word but not an EXACT classifier label ("Backend
+            # Engineering" is the real subdomain) -- the exact-match check
+            # above misses it entirely, so it fell through as an unexplained
+            # literal `skill contains "backend"` search matching nobody
+            # (confirmed live: "candidate with backend experience" returned
+            # 0 of 99 candidates via a literal "backend" skill, while 3 in
+            # that same pool have real Backend Engineering experience).
+            # `domain`'s own apply-time matching is ALREADY a substring
+            # check (see _FREE_TEXT_LIST_FIELDS's docstring), so passing the
+            # recruiter's own term through unresolved is correct here and
+            # matches every real subdomain it's a substring of, not just one
+            # guessed canonical name -- no exact resolution needed, unlike
+            # the skill_experience branch above, which must attribute years
+            # to exactly one subdomain and can't afford that ambiguity.
+            if (
+                f.field == "skill"
+                and term.lower() not in real_skills
+                and any(term.lower() in name for name in subdomains)
+            ):
+                out.append(Filter(field="domain", operator="contains", value=term, hard=f.hard))
+                notes.append(
+                    f'"{term}" is a practice area/position, not a specific skill -- matched '
+                    f"against real classified candidate experience instead."
+                )
+                continue
             out.append(f)
             # Real, reported gap: "supply chain platform" isn't a known
             # tool (checked -- absent from the ~14,774-canonical-name
@@ -512,7 +591,20 @@ def _collapse_same_field_or_pairs(
     separately observed bug: "Kubernetes or Terraform" alone once produced
     FOUR filters, the same two values each listed twice) are always
     deduped first, unconditionally -- a literal duplicate can never
-    represent a genuine second requirement, "or" or not."""
+    represent a genuine second requirement, "or" or not.
+
+    Scans every PAIR within a same-field/same-hardness group, not just
+    whole groups of exactly two. Real, reported live bug: "React on the
+    frontend and Node.js or Python on the backend" (React, Node.js, Python
+    all hard `skill` filters -- a group of THREE) and "Java and Spring Boot
+    ... deployed on AWS" + "Node.js or Python" style compounds skipped
+    collapsing entirely under the old whole-group-must-be-exactly-2 gate,
+    even though the Node.js/Python pair specifically has clear "or"
+    evidence in the query -- a genuinely unrelated third hard requirement
+    (React) sharing the same (field, hard) key silently blocked the fix for
+    the actual pair. Now finds and collapses only the specific pairs with
+    real "or" evidence (greedily, each filter used in at most one pair),
+    leaving every other same-field filter in the group untouched."""
     deduped: list[Filter] = []
     seen = set()
     for f in filters:
@@ -539,27 +631,65 @@ def _collapse_same_field_or_pairs(
         if f.operator in ("contains", "equals") and isinstance(f.value, str):
             groups.setdefault((f.field, f.hard), []).append(i)
 
-    to_collapse = {
-        key: idxs for key, idxs in groups.items()
-        if len(idxs) == 2
-        and _or_word_between(query, deduped[idxs[0]].value, deduped[idxs[1]].value)
-    }
-    if not to_collapse:
+    # Greedily pair up indices within each group that have verified "or"
+    # evidence between their values -- each index used in at most one pair,
+    # so an odd one out (or a value with no "or" partner) is simply left
+    # alone rather than forced into a spurious pairing.
+    #
+    # Candidate pairs are tried CLOSEST-together-in-the-query first, not in
+    # filter order. Real, reported live bug this fixes: "React on the
+    # frontend and Node.js or Python on the backend" -- checking pairs in
+    # filter order tried (React, Node.js) first (no "or" between them,
+    # correctly skipped), then (React, Python) -- and `_or_word_between`
+    # says True, because the REAL "or" (the one between Node.js and Python)
+    # happens to also fall inside the wider React...Python span. React got
+    # wrongly paired with Python, leaving Node.js orphaned as an unrelated
+    # hard AND -- the opposite of every value here. Node.js and Python
+    # (11 characters apart) are the genuine adjacent pair; React and Python
+    # (37 characters apart) only "have an or between them" because a real,
+    # different pair's "or" sits in that longer span. Sorting every valid
+    # candidate pair by character distance and assigning closest-first
+    # means the genuine adjacent pair is always claimed before a wider,
+    # coincidental span gets a chance to steal one of its terms.
+    def _pair_span(a: str, b: str) -> int:
+        ql = query.lower()
+        ia, ib = ql.find(str(a).lower()), ql.find(str(b).lower())
+        return abs(ia - ib) if ia != -1 and ib != -1 else 10**9
+
+    pair_of: dict[int, int] = {}
+    for idxs in groups.values():
+        candidates = sorted(
+            (
+                (i, j) for a, i in enumerate(idxs) for j in idxs[a + 1:]
+                if _or_word_between(query, deduped[i].value, deduped[j].value)
+            ),
+            key=lambda pair: _pair_span(deduped[pair[0]].value, deduped[pair[1]].value),
+        )
+        used: set[int] = set()
+        for i, j in candidates:
+            if i in used or j in used:
+                continue
+            pair_of[i] = j
+            pair_of[j] = i
+            used.add(i)
+            used.add(j)
+
+    if not pair_of:
         return deduped, None
 
-    collapse_idx = {i for idxs in to_collapse.values() for i in idxs}
     out: list[Filter] = []
     notes = []
-    handled = set()
+    emitted: set[int] = set()
     for i, f in enumerate(deduped):
-        key = (f.field, f.hard)
-        if i not in collapse_idx:
+        if i not in pair_of:
             out.append(f)
             continue
-        if key in handled:
+        if i in emitted:
             continue
-        handled.add(key)
-        values = [deduped[j].value for j in to_collapse[key]]
+        j = pair_of[i]
+        emitted.add(i)
+        emitted.add(j)
+        values = [deduped[i].value, deduped[j].value]
         out.append(Filter(field=f.field, operator="in", value=values, hard=f.hard))
         notes.append(f'Read "{values[0]} or {values[1]}" as either one, not both required.')
     return out, " ".join(notes) or None
@@ -985,6 +1115,14 @@ def _domain_skill_options(job_id: str, domain_term: str, limit: int = 8) -> list
     return [taxonomy_tools[k] for k, _ in ranked[:limit]]
 
 
+# Caps how many semantic-fallback guesses _experience_text_matches ever
+# shows for one untracked term -- this tier is already the lowest-confidence
+# one in the system (see that function's docstring on why it was reverted
+# once already), so it stays a short, clearly-secondary list rather than
+# dumping every candidate that happens to clear the similarity floor.
+_MAX_POSSIBLE_EXPERIENCE_MATCHES = 5
+
+
 class FilterService:
     def __init__(
         self,
@@ -1099,6 +1237,37 @@ class FilterService:
             # Not a recognizable yes/no -- treat as abandoning the pending
             # confirm and fall through to a fresh query below.
 
+        # Real, reported live bug: a pending confirm ("here are your active
+        # filters -- keep, drop, or add each one") that's abandoned by
+        # typing anything OTHER than yes/no (the >6-word branch above never
+        # even LOOKS at it, and the <=6-word "not recognizable yes/no" case
+        # falls through too) used to do so completely silently AND kept
+        # merging the new query onto `spec` -- the OLD, PRE-confirm filter
+        # set, since the confirm's proposed filters were only ever staged in
+        # `pending_confirm.choices`, never committed to `current.spec`.
+        # Confirmed live: recruiter states a full compound requirement
+        # ("Senior Backend Engineer... Python or Java, REST APIs,
+        # microservices, PostgreSQL, Redis, Kafka, Docker, Kubernetes, AWS"),
+        # gets the review checklist, then -- naturally, in a chat UI --
+        # types a completely different follow-up question instead of
+        # clicking Search. The entire compound requirement silently vanished
+        # with zero indication, AND the follow-up got merged against
+        # whatever unrelated filters predated it, producing a result that
+        # matched neither the abandoned query nor a clean reading of the new
+        # one. Two fixes, both requested directly: (1) say so, out loud,
+        # instead of silently reverting; (2) treat the abandoning message as
+        # a complete, standalone query in its own right -- not one more
+        # addition onto a filter set the recruiter has already moved past by
+        # not confirming it -- by resetting `spec` to empty here rather than
+        # leaving the stale pre-confirm filters in place for the merge below.
+        pending_confirm_abandoned_note: str | None = None
+        if current.pending_confirm:
+            pending_confirm_abandoned_note = (
+                "You didn't confirm your previous filter review, so I've "
+                "dropped it and I'm treating this as a fresh, standalone search."
+            )
+            spec = FilterSpec()
+
         # Same idea for a pending CLARIFY ("what minimum years of
         # experience?"): a short reply ("2+ years", or clicking that exact
         # option) has no reliable interpretation once sent to the LLM with
@@ -1161,6 +1330,25 @@ class FilterService:
         )
         if debug_info is not None:
             debug_info["llm_out"] = llm_out.model_dump(exclude_none=True)
+
+        # Surface the abandoned-confirm note (see above) in whichever
+        # message field this turn's intent actually returns -- CLARIFY's own
+        # question, everything else's `message` (UNSUPPORTED_FILTER reads it
+        # directly; EXPERIENCE_SEARCH/FILTER_CANDIDATES fold it into
+        # extra_message further down). LOOKUP builds its own answer text
+        # independently of llm_out.message and isn't covered here -- asking
+        # to look up a specific candidate's detail immediately after
+        # ignoring a filter review is enough of an edge case that adding a
+        # fourth injection site isn't worth it.
+        if pending_confirm_abandoned_note:
+            if llm_out.intent == "CLARIFY":
+                llm_out.question = " ".join(
+                    m for m in (pending_confirm_abandoned_note, llm_out.question) if m
+                )
+            else:
+                llm_out.message = " ".join(
+                    m for m in (pending_confirm_abandoned_note, llm_out.message) if m
+                )
 
         if llm_out.intent == "CLARIFY":
             pending = None
@@ -1308,9 +1496,32 @@ class FilterService:
             m for m in (llm_out.message, *skip_notes, domain_reclass_note,
                         or_collapse_note, seniority_note, *group_reclass_notes) if m
         ) or None
+        # Real, reported live bug: a newly-recognized seniority band (see
+        # _expand_seniority_filters) states its own years requirement via a
+        # brand new alternative_groups OR-of-routes, but an EARLIER, now-
+        # superseded turn's plain flat `experience` number was left
+        # completely untouched right alongside it -- nothing about
+        # recognizing "senior" this turn ever re-touches that old flat key,
+        # since it lives in `spec.filters`, not `expanded_filters`.
+        # Confirmed live: an old "experience >= 0" sat right next to a new
+        # "(experience >= 7 AND <= 12) OR (Senior/Sr title)" OR-group,
+        # displaying a nonsensical-looking pair of requirements even though
+        # the OR-group alone still enforced the real constraint. The
+        # recruiter's newer, more specific "senior" statement supersedes
+        # whatever plain number came before it -- drop the stale flat key
+        # entirely here rather than let it linger as noise (or, worse, as an
+        # actively conflicting stale floor/ceiling the new band never sees).
+        # Only fires for the un-degraded case (a real new AlternativeGroup
+        # pair) -- the degraded case instead emits its own flat `experience`
+        # filter into `expanded_filters`, which already goes through
+        # merge_filters' own same-key strength comparison below.
+        carry_forward_filters = spec.filters
+        if seniority_groups:
+            carry_forward_filters = [f for f in spec.filters if f.field != "experience"]
+
         effective = (
             expanded_filters if replace_all
-            else merge_filters(spec.filters, expanded_filters)
+            else merge_filters(carry_forward_filters, expanded_filters)
         )
         effective_groups = merge_alternative_groups(
             spec.alternative_groups, repaired_groups, replace_all,
@@ -1618,18 +1829,19 @@ class FilterService:
         ))
 
         if not matched:
+            no_match_message = f'No candidates\' work history matched "{llm_out.experience_query}".'
             return FilterResponse(
                 status="no_match",
                 total=len(candidates), showing=0,
                 logic=spec.logic, filters=spec.filters, chips=chips,
-                message=f'No candidates\' work history matched "{llm_out.experience_query}".',
+                message=" ".join(m for m in (llm_out.message, no_match_message) if m),
             )
 
         return FilterResponse(
             status="ok",
             total=len(candidates), showing=len(matched),
             logic=spec.logic, filters=spec.filters, chips=chips,
-            candidates=matched,
+            candidates=matched, message=llm_out.message,
         )
 
     # ------------------------------------------------------------------ #
@@ -1773,7 +1985,7 @@ class FilterService:
         # tracked field the term was never going to be found in (see
         # _experience_text_matches). Stays completely silent when nothing
         # is found, same as before this existed.
-        text_extra, text_terms_found = self._experience_text_matches(
+        text_extra, text_terms_found, possible_extra, possible_terms_found = self._experience_text_matches(
             job_id, hard_spec,
             matched_ids={c.get("id") for c in filtered} | {c.get("id") for c in full_extra},
         )
@@ -1799,6 +2011,37 @@ class FilterService:
                 f'Found by searching real job-history text for "{names}" -- not a tracked '
                 f"category, so this may miss people who did this but never wrote it that way.",
             ) if m)
+        # A candidate already sitting in `partial` has a more specific,
+        # more useful label already ("missing: X") than a vague semantic
+        # guess would add -- never show both for the same person.
+        partial_ids = {c.get("id") for c in partial}
+        possible_extra = [c for c in possible_extra if c.get("id") not in partial_ids]
+        if possible_terms_found:
+            names = " / ".join(possible_terms_found)
+            extra_message = " ".join(m for m in (
+                extra_message,
+                f'No exact match for "{names}" in anyone\'s job history -- the '
+                f"candidates below are ranked separately as unconfirmed possible "
+                f"matches (based on semantic similarity, not a literal mention), "
+                f"please verify manually.",
+            ) if m)
+        # A requested skill a candidate genuinely DID (narrated in their own
+        # job-description text, not just tagged in a keyword list) is
+        # stronger evidence of real hands-on use than the same skill sitting
+        # bare in their `skills` dict -- a recruiter said so explicitly (real
+        # request, not a reported bug): rank a candidate who actually
+        # describes using the requested skills above an otherwise-equal
+        # candidate who only lists them. Ranking-only, same as match_score --
+        # never changes who matches or which TIER (exact/fuzzy/partial) a
+        # candidate lands in, only the order WITHIN one.
+        for c in filtered:
+            c["experience_verified_skills"] = self._skill_experience_corroboration(c, hard_spec.filters)
+        for c in full_extra:
+            c["experience_verified_skills"] = self._skill_experience_corroboration(c, hard_spec.filters)
+        for c in partial:
+            c["experience_verified_skills"] = self._skill_experience_corroboration(c, hard_spec.filters)
+        for c in possible_extra:
+            c["experience_verified_skills"] = self._skill_experience_corroboration(c, hard_spec.filters)
         # Strict TIER order, never interleaved by raw match_score across
         # tiers -- a real, reported bug: a fuzzy/related-tool match (e.g.
         # "Jira" satisfied via a related tool, not the literal word) could
@@ -1811,22 +2054,38 @@ class FilterService:
         # via a curated related-tool widening (see fuzzy_skill_match) --
         # still a complete match, just not a literal one, so it ranks below
         # exact but above partial. Tier 3: partial -- missing at least one
-        # requirement entirely (see partial_skill_match), always last.
-        # match_score still orders candidates WITHIN each tier.
-        filtered.sort(key=lambda c: c.get("match_score", 0), reverse=True)
+        # requirement entirely (see partial_skill_match). Tier 4:
+        # possible_extra -- an explicitly UNCONFIRMED semantic guess (see
+        # _experience_text_matches), always last and never mixed in with any
+        # tier a recruiter might mistake for a real match.
+        # Within each tier: experience-verified skill count first, then
+        # match_score (possible_extra instead ranks by its own similarity
+        # score -- match_score/experience_verified_skills don't mean
+        # anything for a filter this candidate never literally satisfied).
+        filtered.sort(key=lambda c: (
+            -c["experience_verified_skills"]["matched"], -c.get("match_score", 0),
+        ))
         if full_extra:
-            full_extra.sort(key=lambda c: c.get("match_score", 0), reverse=True)
+            full_extra.sort(key=lambda c: (
+                -c["experience_verified_skills"]["matched"], -c.get("match_score", 0),
+            ))
             filtered = filtered + full_extra
         if partial:
             partial.sort(key=lambda c: (
-                -c["partial_skill_match"]["matched"], -c.get("match_score", 0),
+                -c["partial_skill_match"]["matched"],
+                -c["experience_verified_skills"]["matched"],
+                -c.get("match_score", 0),
             ))
             filtered = filtered + partial
-        if full_extra or partial:
+        if possible_extra:
+            possible_extra.sort(key=lambda c: -c["possible_experience_match"]["score"])
+            filtered = filtered + possible_extra
+        if full_extra or partial or possible_extra:
             logger.info(
-                "FUZZY_SKILL_MATCH job_id=%s full_extra=%d(%s) partial=%d(%s)",
+                "FUZZY_SKILL_MATCH job_id=%s full_extra=%d(%s) partial=%d(%s) possible=%d(%s)",
                 job_id, len(full_extra), [c.get("name") for c in full_extra],
                 len(partial), [c.get("name") for c in partial],
+                len(possible_extra), [c.get("name") for c in possible_extra],
             )
 
         # Soft preferences (schema_v2's hard=false, see Filter.hard) never
@@ -1988,12 +2247,42 @@ class FilterService:
         reliability/complexity, don't silently under-support" precedent as
         this project's removed LLM-verification semantic tier. See
         `_fuzzy_alternative_group_matches` below, which covers that case
-        separately (full-match only, no partial-credit tier)."""
+        separately (full-match only, no partial-credit tier).
+
+        ROLE requirements (job_title/domain/domain_experience) share this
+        SAME partial-credit pool, not a separate one -- real, explicit
+        recruiter request: a candidate hitting every requested skill but
+        missing the stated role (e.g. "backend engineer" -- no job_title or
+        classified domain match) was previously excluded OUTRIGHT, with zero
+        visibility, because only "skill" filters were ever credit-eligible;
+        everything else was a strict all-or-nothing gate. Confirmed live:
+        Allan R Davis has real Backend Engineering domain experience AND
+        literal Python, but no job_title text saying "Backend Engineer" --
+        under the old rule he never appeared anywhere in results for
+        "backend engineer with Python". Role filters get NO fuzzy/related-
+        tool widening (that machinery is skill-taxonomy-specific and doesn't
+        apply to a title/domain string) -- a role requirement is satisfied
+        or it isn't, contributing to the SAME matched/total/missing count a
+        missed skill would, so "4 of 5 requirements met, missing: Backend
+        Engineering experience" reads as one coherent scorecard rather than
+        two separate, oddly-named concepts."""
         skill_idx = [
             i for i, f in enumerate(spec.filters)
             if f.field == "skill" and f.operator in {"contains", "not_contains", "in", "not_in"}
         ]
-        if not skill_idx:
+        role_idx = [
+            i for i, f in enumerate(spec.filters)
+            # domain_experience deliberately excluded -- it's a numeric years
+            # threshold ("2+ years in DevOps"), a different question ("how
+            # long") than the categorical "did they do this role at all"
+            # plain `domain` and `job_title` answer, and already has its own
+            # display path (_annotate_domain_match_years).
+            if (f.field == "job_title" and f.operator in
+                {"contains", "not_contains", "equals", "not_equals"})
+            or (f.field == "domain" and f.operator in
+                {"contains", "not_contains", "equals", "not_equals"})
+        ]
+        if not skill_idx and not role_idx:
             return [], []
 
         candidates = get_matched_candidates(job_id)
@@ -2055,48 +2344,68 @@ class FilterService:
             )))
             for i in skill_idx
         }
+        # "Backend Engineer" (job_title, stated as a resume-worded title) vs
+        # "Backend Engineering experience" (domain, stated as real classified
+        # work history) -- different label shape per field so "missing: ..."
+        # reads naturally either way, matching how a domain reclassification
+        # note already phrases the same underlying concept elsewhere in this
+        # file (_reclassify_skill_as_domain_when_its_a_position).
+        role_labels = {
+            i: (str(spec.filters[i].value) if spec.filters[i].field == "job_title"
+                else f"{spec.filters[i].value} experience")
+            for i in role_idx
+        }
+        credit_idx = set(skill_idx) | set(role_idx)
 
         full_extra, partial = [], []
         for c in pool:
             cid = c.get("id")
-            non_skill_ok = True
-            skill_hits, skill_misses = [], []
+            strict_gate_ok = True
+            req_hits, req_misses = [], []
             fuzzy_hits: list[dict] = []
             for i, f in enumerate(spec.filters):
                 if i in qualifying_by_filter:
                     hit = cid in qualifying_by_filter[i]
                     if f.operator in {"not_contains", "not_in"}:
                         hit = not hit
-                    (skill_hits if hit else skill_misses).append(skill_labels[i])
+                    (req_hits if hit else req_misses).append(skill_labels[i])
                     kind = match_kind_by_filter[i].get(cid)
                     if hit and f.operator not in {"not_contains", "not_in"} and kind:
                         fuzzy_hits.append({"skill": skill_labels[i], "matched_via": kind})
+                elif i in role_idx:
+                    # Unlike the skill branch above, `matches_filter` here
+                    # already applies the filter's own operator (including
+                    # not_contains/not_equals negation) via engine.py's
+                    # OPERATORS dispatch -- no manual re-negation needed, and
+                    # doing so would double-negate.
+                    hit = matches_filter(c, f)
+                    (req_hits if hit else req_misses).append(role_labels[i])
                 else:
-                    non_skill_ok = non_skill_ok and matches_filter(c, f)
+                    strict_gate_ok = strict_gate_ok and matches_filter(c, f)
 
             if spec.logic == "OR":
-                if non_skill_ok or skill_hits:
+                if strict_gate_ok or req_hits:
                     enriched = dict(c) if fuzzy_hits else c
                     if fuzzy_hits:
                         enriched["fuzzy_skill_match"] = fuzzy_hits
                     full_extra.append(enriched)
             elif spec.logic == "NOT":
-                if not non_skill_ok and not skill_hits:
+                if not strict_gate_ok and not req_hits:
                     full_extra.append(c)
             else:  # AND
-                if not non_skill_ok:
+                if not strict_gate_ok:
                     continue
-                if not skill_misses:
+                if not req_misses:
                     enriched = dict(c) if fuzzy_hits else c
                     if fuzzy_hits:
                         enriched["fuzzy_skill_match"] = fuzzy_hits
                     full_extra.append(enriched)
-                elif skill_hits:
+                elif req_hits:
                     enriched = dict(c)
                     enriched["partial_skill_match"] = {
-                        "matched": len(skill_hits),
-                        "total": len(skill_hits) + len(skill_misses),
-                        "missing": skill_misses,
+                        "matched": len(req_hits),
+                        "total": len(req_hits) + len(req_misses),
+                        "missing": req_misses,
                     }
                     if fuzzy_hits:
                         enriched["fuzzy_skill_match"] = fuzzy_hits
@@ -2209,15 +2518,16 @@ class FilterService:
     # ------------------------------------------------------------------ #
     def _experience_text_matches(
         self, job_id: str, spec: FilterSpec, matched_ids: set,
-    ) -> tuple[list[dict], list[str]]:
-        """Returns (full_extra, terms_found) -- terms_found lists each
-        distinct untracked term that actually matched at least one
-        candidate this way, for the caller to fold into a response note
-        (silent, same as before, when nothing is found -- see
+    ) -> tuple[list[dict], list[str], list[dict], list[str]]:
+        """Returns (full_extra, terms_found, possible_extra, possible_terms_found).
+        `full_extra`/`terms_found` behave exactly as before (exact literal
+        phrase match -- silent when nothing is found, see
         test_untracked_multiword_phrase_gets_an_honest_note_not_silence,
-        which relies on staying silent in exactly that case)."""
+        which relies on that). `possible_extra`/`possible_terms_found` are
+        the NEW, explicitly lower-confidence semantic fallback -- see the
+        block below for when it fires and why it stayed off until now."""
         if spec.logic != "AND":
-            return [], []
+            return [], [], [], []
 
         def term_of(f: Filter) -> str | None:
             if f.field in ("domain", "skill") and f.operator in ("contains", "equals"):
@@ -2247,12 +2557,12 @@ class FilterService:
             and _is_untracked_term(term_of(f))
         ]
         if not idx:
-            return [], []
+            return [], [], [], []
 
         candidates = get_matched_candidates(job_id)
         pool = [c for c in candidates if c.get("id") not in matched_ids]
         if not pool:
-            return [], []
+            return [], [], [], []
 
         terms = {i: term_of(spec.filters[i]) for i in idx}
         # Try the exact phrase (singular + plural, see _phrase_patterns)
@@ -2273,6 +2583,7 @@ class FilterService:
         texts = experience_texts_by_candidate()
         full_extra = []
         terms_found: set[str] = set()
+        matched_this_pass: set = set()
         for c in pool:
             text = texts.get(c.get("id"))
             if not text:
@@ -2285,7 +2596,155 @@ class FilterService:
             enriched["experience_text_match"] = [{"term": terms[i]} for i in idx]
             full_extra.append(enriched)
             terms_found.update(terms[i] for i in idx)
-        return full_extra, sorted(terms_found)
+            matched_this_pass.add(c.get("id"))
+
+        # Semantic fallback for exactly the case the literal check above
+        # structurally can't handle: real, reported gap -- "who has worked
+        # on banking system" found 0 matches even though real candidates
+        # describe the equivalent thing in different words ("SMS Banking
+        # application", "Banking-as-a-Service (BaaS) Platform") that no
+        # literal phrase variant covers. Tagged `possible_experience_match`
+        # and ranked in its OWN tier below every literal/tracked match (see
+        # the "Strict TIER order" block below), with an honest note that
+        # these are unconfirmed, not silently blended in as if they were as
+        # reliable as a literal hit. Scoped narrowly on purpose: only fires
+        # for a SINGLE untracked term (`len(idx) == 1`) with ZERO literal
+        # hits -- a compound multi-term AND has no single query string to
+        # embed, and any candidate the literal check already confirmed has
+        # no need for a lower-confidence guess sitting alongside it.
+        #
+        # A previous attempt at ranking by raw embedding score ALONE
+        # (unioned with the literal check, no gate) was reverted, then
+        # brought back and live-verified as still imprecise: for "banking
+        # system", 3 of the top 5 by score had ZERO mention of banking
+        # anywhere in their text (Adam Kobeszko, Allan R Davis, Amber
+        # Jorgens Halenbeck), while two genuine matches (Alpa Bagga's
+        # "banking (SBI) platform", Andrew Jones's "Banking-as-a-Service
+        # Platform") scored LOWER and were pushed out of the top 5 entirely.
+        # Raising the similarity threshold doesn't fix this -- verified
+        # true/false positives are thoroughly interleaved at every score
+        # level, no cutoff separates them. Swapping the embedding model
+        # doesn't fix it either -- 3 alternatives tested head-to-head across
+        # 6 queries each; none beat this one, and the closest contender was
+        # still worse specifically on this query.
+        #
+        # Fix: a literal-presence GATE runs BEFORE semantic ranking, not
+        # instead of it -- embeddings should answer "which of the
+        # candidates who plausibly touch this concept are most relevant",
+        # not "does this candidate have any connection to it at all" (that
+        # second question is exactly what raw similarity answered badly).
+        # The gate uses _domain_anchor_term, not the literal phrase itself
+        # (never restores requiring the exact "banking system" phrasing --
+        # that's what full_extra/_strip_domain_noise_suffix already tried
+        # and is why this fallback exists in the first place) -- see that
+        # function's docstring for why a bare anchor word is safe to gate on
+        # here even though _strip_domain_noise_suffix refuses to treat one
+        # as a full-confidence match on its own: this only decides
+        # ELIGIBILITY for an already-unconfirmed, capped, lowest-ranked
+        # tier, not a confirmed match by itself.
+        possible_extra: list[dict] = []
+        possible_terms_found: set[str] = set()
+        if len(idx) == 1 and not full_extra and experience_index.index_exists():
+            term = terms[idx[0]]
+            search_pool = [c for c in pool if c.get("id") not in matched_this_pass]
+            anchor = _domain_anchor_term(term)
+            if anchor:
+                anchor_patterns = _phrase_patterns(anchor)
+                search_pool = [
+                    c for c in search_pool
+                    if (t := texts.get(c.get("id"))) and any(p.search(t) for p in anchor_patterns)
+                ]
+            else:
+                search_pool = []
+            pool_ids = {c.get("id") for c in search_pool}
+            by_id = {c.get("id"): c for c in search_pool}
+            hits = []
+            if pool_ids:
+                try:
+                    hits = experience_index.search_candidates(term, pool_ids, top_k=len(pool_ids))
+                except Exception:
+                    logger.warning(
+                        "experience_index.search_candidates failed for %r", term, exc_info=True,
+                    )
+                    hits = []
+            # No _EXPERIENCE_MIN_SIMILARITY floor here, unlike
+            # _answer_experience_search -- that threshold's job (separating
+            # "plausibly relevant" from "irrelevant noise") is now the
+            # anchor gate's job, done more reliably by requiring the real
+            # keyword's literal presence instead of an absolute score cutoff.
+            # Confirmed live this was necessary, not just simpler: once
+            # gated to only candidates who actually mention "banking",
+            # genuine matches Alpa Bagga (0.5389) and Andrew Jones (0.5648)
+            # both score BELOW 0.60 -- the threshold was calibrated against
+            # the UNGATED, noisy full pool, where clearing it meant
+            # "stands out from mostly-irrelevant company"; among an
+            # already-relevant gated pool that same absolute bar just cuts
+            # real matches for no benefit, since every survivor here already
+            # passed a stronger, literal relevance check.
+            scored: dict[str, float] = {}
+            for hit in hits:
+                score = float(hit.get("score", 0.0))
+                cid = hit.get("candidate_id")
+                if cid not in by_id:
+                    continue
+                if score > scored.get(cid, -1.0):
+                    scored[cid] = score
+            for cid, score in sorted(scored.items(), key=lambda kv: -kv[1])[:_MAX_POSSIBLE_EXPERIENCE_MATCHES]:
+                c = by_id[cid]
+                if not all(matches_filter(c, f) for f in other_filters):
+                    continue
+                enriched = dict(c)
+                enriched["possible_experience_match"] = {"term": term, "score": round(score, 4)}
+                possible_extra.append(enriched)
+                possible_terms_found.add(term)
+
+        return full_extra, sorted(terms_found), possible_extra, sorted(possible_terms_found)
+
+    # ------------------------------------------------------------------ #
+    # Real, explicit recruiter request (not a reported bug): a requested
+    # skill the candidate's own job-description text actually narrates
+    # using ("built the payment service in Django") is stronger, more
+    # trustworthy evidence than the SAME skill sitting bare in their tagged
+    # `skills` list -- resume keyword lists are cheap to pad, a real project
+    # sentence is not. This never changes who matches (a candidate with only
+    # tagged, unnarrated skills still passes the filter exactly as before)
+    # -- it only breaks ties WITHIN a tier in their favor when two
+    # candidates are otherwise equally qualified on paper.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _skill_experience_corroboration(candidate: dict, filters: list[Filter]) -> dict:
+        """{"matched": N, "total": M} -- of the hard skill/skill_experience
+        requirements THIS candidate satisfies (checked the same way
+        apply_spec/matches_filter already did to include them at all), how
+        many are ALSO mentioned in their real job-history text, not just
+        their tagged skill list. `total` only counts requirements they
+        actually satisfy -- a skill they're missing entirely isn't a
+        corroboration question, it's already why they're in a lower tier or
+        excluded, so it must never inflate `total` and make a fully-matched
+        candidate look "less verified" than one with fewer requirements."""
+        skill_filters = [
+            f for f in filters
+            if f.hard and f.field in ("skill", "skill_experience")
+            and matches_filter(candidate, f)
+        ]
+        if not skill_filters:
+            return {"matched": 0, "total": 0}
+        text = experience_texts_by_candidate().get(candidate.get("id"))
+        if not text:
+            return {"matched": 0, "total": len(skill_filters)}
+        matched = 0
+        for f in skill_filters:
+            if f.field == "skill_experience":
+                terms = [f.skill] if f.skill else []
+            elif isinstance(f.value, list):
+                terms = [v for v in f.value if isinstance(v, str)]
+            elif isinstance(f.value, str):
+                terms = [f.value]
+            else:
+                terms = []
+            if any(any(p.search(text) for p in _phrase_patterns(t)) for t in terms):
+                matched += 1
+        return {"matched": matched, "total": len(skill_filters)}
 
     # ------------------------------------------------------------------ #
     # Soft preferences (schema_v2's hard=false, see Filter.hard and

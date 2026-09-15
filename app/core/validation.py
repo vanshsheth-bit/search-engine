@@ -9,6 +9,7 @@ Even with schema-constrained decoding, we re-validate everything here:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field as dc_field
 
 from app.core.candidates import canonicalize_country
@@ -24,6 +25,7 @@ from app.core.vocabulary import (
     OPERATORS_BY_TYPE,
     SKILL_SCOPED_FIELDS,
     bare_degree_rank,
+    education_rank,
 )
 from app.models.schemas import AlternativeGroup, Filter
 
@@ -147,6 +149,44 @@ def _skill_developer_phrase(value) -> str | None:
     return None
 
 
+# Common recruiter shorthand for a job-title word, expanded to what a real
+# resume actually spells out -- confirmed live: "backend engg" (recruiter's
+# own abbreviation for "engineer") searched as a literal job_title substring
+# matched 0 candidates on a 99-person pool that has real "Backend Engineer"
+# titles, because nobody's stored title literally contains "engg". Word-
+# boundary, case-insensitive, whole-word only (never a substring match
+# inside a longer word) -- "sr" must not touch "Senior" already spelled out,
+# and must not fire inside an unrelated word that happens to contain these
+# letters.
+_TITLE_ABBREVIATIONS = {
+    "engg": "Engineer", "eng": "Engineer",
+    "mgr": "Manager", "mgmt": "Management",
+    "sr": "Senior", "jr": "Junior",
+    "dev": "Developer", "devs": "Developers",
+    "admin": "Administrator", "arch": "Architect",
+    "tech": "Technical", "asst": "Assistant",
+    "exec": "Executive", "coord": "Coordinator",
+    "spec": "Specialist", "eng.": "Engineer",
+}
+_TITLE_ABBREV_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(
+        _TITLE_ABBREVIATIONS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _expand_title_abbreviations(value) -> str | None:
+    """Expands every recognized abbreviation in a job_title value to its
+    real word, or None if `value` contains none (so the caller can tell
+    "nothing to change" apart from "changed to the same text")."""
+    if not isinstance(value, str):
+        return None
+    expanded = _TITLE_ABBREV_RE.sub(
+        lambda m: _TITLE_ABBREVIATIONS[m.group(0).lower()], value,
+    )
+    return expanded if expanded != value else None
+
+
 _NOT_OPERATORS = {"not_contains", "not_equals", "not_in"}
 
 
@@ -185,6 +225,11 @@ def validate_filters(
                 f.field = "education"
                 f.operator = "gte"
                 f.value = EDUCATION_RANK_LABELS[rank]
+
+        if f.field == "job_title" and f.operator in {"contains", "not_contains", "equals", "not_equals"}:
+            expanded_title = _expand_title_abbreviations(f.value)
+            if expanded_title is not None:
+                f.value = expanded_title
 
         if f.field == "job_title" and f.operator in {"contains", "not_contains", "equals", "not_equals"}:
             skill_value = _skill_developer_phrase(f.value)
@@ -270,6 +315,25 @@ def validate_filters(
                 f"\"{f.value}\" isn't a specific skill or technology -- which one did you mean?"
             )
             continue
+
+        # Real, reported live bug: a vague education phrase with no stated
+        # degree ("done high education from...") made the model invent
+        # `{"field":"education","operator":"gte","value":"High"}` --
+        # "High"/"Low" are real values for the ordinal TIER fields
+        # (college_tier/company_tier), not degree labels, and
+        # education_rank("High") returns None: this filter could never
+        # match any real candidate (their `education` is a degree name,
+        # never compared against a rank that doesn't exist) yet passed
+        # through silently, with no note explaining the empty result.
+        # Caught here the same way an unrecognized skill term is, before it
+        # ever reaches engine.py's comparison.
+        if f.field == "education" and f.operator in {"gte", "lte", "equals", "not_equals"}:
+            if education_rank(f.value) is None:
+                skipped.append(
+                    f"\"{f.value}\" isn't a recognized education level "
+                    f"(e.g. Bachelor's, Master's, Doctorate) -- which one did you mean?"
+                )
+                continue
 
         # notice_period's engine matching never actually reads `unit` (see
         # engine.py -- it's compared as a plain number of days) and

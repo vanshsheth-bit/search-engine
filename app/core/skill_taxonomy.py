@@ -436,11 +436,17 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
     stored as "machine learning" -- the alias never needs to appear in a
     filter's own value list to be matched.
 
-    Also excludes `_GENERIC_SUPPORT_LIBS` (NumPy, pandas, git, ...) from the
-    related-tools portion, same curated exclusion related_terms_for already
-    applies and for the identical reason: a library that's "related" to
-    nearly everything in its ecosystem is useless signal for "did this
-    person do the specific thing asked about". And caps the related-tools
+    Also excludes `_GENERIC_SUPPORT_LIBS` (NumPy, pandas, git, ...) AND any
+    bare `_PROGRAMMING_LANGUAGES` entry (Python, Java, ...) from the
+    related-tools portion, same curated exclusions related_terms_for already
+    applies and for the identical reason -- see that function's own
+    docstring for the real, reported live bug the language exclusion fixes
+    (a framework's taxonomy entry citing its own base language as its
+    highest-weighted "related tool" made a hard, specific-framework search
+    match anyone who merely knows the language, e.g. "FastAPI" -> "Python").
+    A library/language that's "related" to nearly everything in its
+    ecosystem is useless signal for "did this person do the specific thing
+    asked about". And caps the related-tools
     portion to _MAX_RELATED_TOOLS -- confirmed live, "Kubernetes" (a tool
     with unusually rich taxonomy data) with no cap pulled in 66 items, not
     just close siblings but genuinely different, merely-commonly-adjacent
@@ -456,6 +462,7 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
         return None
 
     expanded = [canonical]
+    exclude_languages = _norm(canonical) not in _LANGUAGE_DEFINING_CONCEPTS_NORM
     # canonical_to_related is already sorted by weight descending (see
     # _load_taxonomy) -- taking the first _MAX_RELATED_TOOLS after the
     # threshold/generic-lib filter keeps the highest-relevance related
@@ -463,6 +470,7 @@ def expand_skill_term(term: str, min_weight: float = DEFAULT_MIN_WEIGHT) -> list
     expanded.extend([
         rtool for rtool, weight in canonical_to_related.get(canonical, [])
         if weight >= min_weight and _norm(rtool) not in _GENERIC_SUPPORT_LIBS
+        and (not exclude_languages or _norm(rtool) not in _PROGRAMMING_LANGUAGES_NORM)
     ][:_MAX_RELATED_TOOLS])
     # de-dupe, preserve order (canonical first, most-relevant related next)
     seen, out = set(), []
@@ -707,6 +715,23 @@ _PROGRAMMING_LANGUAGES = {
 # compare like-for-like against _norm(canon)/_norm(rtool) below.
 _PROGRAMMING_LANGUAGES_NORM = {_norm(lang) for lang in _PROGRAMMING_LANGUAGES}
 
+# The language-exclusion above fixes a specific direction: a SPECIFIC
+# PRODUCT/framework's own taxonomy entry listing its base language as its
+# highest-weighted "related tool" (FastAPI -> Python) is a false widening,
+# because the language is a coincidental ecosystem artifact, not what the
+# recruiter actually asked about. That reasoning does NOT hold for a
+# genuinely generic UMBRELLA concept whose real-world definition IS a
+# specific query language -- "relational database" doesn't merely happen to
+# co-occur with SQL, being SQL-based is what makes a database relational in
+# the first place. Real, reported live gap: a recruiter writing "relational
+# database" got zero credit for a candidate who has the literal "SQL" skill,
+# since SQL is in _PROGRAMMING_LANGUAGES and so was blanket-excluded here
+# same as any other language. Curated exception set, same pattern as
+# _GENERIC_SUPPORT_LIBS/_PROGRAMMING_LANGUAGES themselves -- add a concept
+# here only when the language is the concept's OWN definition, not merely a
+# common tool used alongside it.
+_LANGUAGE_DEFINING_CONCEPTS_NORM = {_norm(c) for c in ("relational database",)}
+
 
 def skill_names_of(candidate: dict) -> list[str]:
     """Public wrapper on _raw_skill_names -- a candidate's real skill names,
@@ -722,10 +747,10 @@ def related_terms_for(
     - exact_terms: the tool's own canonical name + real aliases -- always the
       same thing, safe to treat identically.
     - related_terms: other tools genuinely close enough (>= min_weight, not
-      a generic supporting library -- see _GENERIC_SUPPORT_LIBS, and not a
-      DIFFERENT programming language from `term` itself -- see
-      _PROGRAMMING_LANGUAGES) to reasonably stand in for it, e.g. "PyTorch"
-      -> also TensorFlow, Keras, Hugging Face.
+      a generic supporting library -- see _GENERIC_SUPPORT_LIBS, and never a
+      bare PROGRAMMING LANGUAGE -- see _PROGRAMMING_LANGUAGES) to reasonably
+      stand in for it, e.g. "PyTorch" -> also TensorFlow, Keras, Hugging
+      Face.
 
     Used to widen a specific-tool skill filter so a candidate who has a
     close sibling tool counts as a match too -- confirmed necessary against
@@ -734,15 +759,37 @@ def related_terms_for(
     Callers decide how to combine this with the candidate's real data (see
     service.py's fuzzy-matching pass) -- this function only looks up the
     taxonomy relationship, it never itself decides who counts as a match.
+
+    A bare language is EXCLUDED from `related` unconditionally, not just
+    when `term` is itself a different language. Real, reported live bug:
+    "FastAPI" (searched hard, AND'd with PostgreSQL + Docker) matched 51 of
+    99 candidates on job 00000103 -- because the taxonomy's own FastAPI
+    entry lists "Python" as ITS highest-weighted related tool (0.98, ahead
+    of Pydantic/Uvicorn/Django/Flask), so any candidate who merely knows
+    Python at all -- no FastAPI, no Django, no Flask, nothing web-framework-
+    specific -- counted as a fuzzy FastAPI match. Confirmed the same pattern
+    recurs across the taxonomy, not a one-off: Django and Flask both ALSO
+    list their own base language as their #1 related tool (0.96/0.96), as
+    does Spring Boot for Java (0.96). The underlying co-occurrence data is
+    genuinely bidirectional (FastAPI<->Python, Python<->FastAPI both score
+    high), but the correct INFERENCE is one-directional: a candidate with
+    "Django" is good evidence they know Python (a specific framework
+    implies its base language), but a candidate with bare "Python" is NOT
+    evidence they've used FastAPI specifically (the base language does not
+    imply any one of the many frameworks built on it). related_terms_for
+    ("Python") still correctly includes django/flask/fastapi (confirmed
+    unaffected by this change, since those aren't in _PROGRAMMING_LANGUAGES)
+    -- only the reverse direction (a language appearing IN another tool's
+    related list) is now excluded, for every tool, not just other languages.
     """
     canon = canonicalize(term)
     _, canonical_to_related, canonical_to_aliases = _load_taxonomy()
     exact = {canon.lower()} | {a.lower() for a in canonical_to_aliases.get(canon, [])}
-    term_is_language = _norm(canon) in _PROGRAMMING_LANGUAGES_NORM
+    exclude_languages = _norm(canon) not in _LANGUAGE_DEFINING_CONCEPTS_NORM
     related = {
         rtool.lower() for rtool, w in canonical_to_related.get(canon, [])
         if w >= min_weight and rtool.lower() not in exact
         and _norm(rtool) not in _GENERIC_SUPPORT_LIBS
-        and not (term_is_language and _norm(rtool) in _PROGRAMMING_LANGUAGES_NORM)
+        and (not exclude_languages or _norm(rtool) not in _PROGRAMMING_LANGUAGES_NORM)
     }
     return exact, related

@@ -115,5 +115,12 @@ class Settings:
     # use "-1" for "never unload") if this box is dedicated to this service.
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
+    # Qdrant vector store for the experience index (docker-compose.yml runs
+    # it locally). Collection name is versioned by embedding model + dim so
+    # switching embedding models later can't silently mix incompatible
+    # vectors into one collection.
+    qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "experience_chunks_nomic768")
+
 
 settings = Settings()

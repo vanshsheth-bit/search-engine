@@ -90,6 +90,31 @@ def run_self_check(cases: list[Case]) -> list[CaseResult]:
     return results
 
 
+def _resolve_v2_filters(out, query: str, current_filters: list[dict]) -> list:
+    """v2's raw LLMOutput has `structured`/`tools` populated and `filters`
+    EMPTY (see schema_v2_adapter.parse_v2_output's docstring -- resolving
+    those into real Filter objects is deliberately NOT this adapter's job).
+    The real app never scores that raw output directly: service.py's
+    `_filter_by_query` always runs it through `taxonomy.resolve_filters`
+    then `_repair_resolved_filters` before a filter list means anything
+    (see service.py ~line 1290-1297). This mirrors exactly that tail so
+    `--live` scores what the app actually produces, not the pre-resolution
+    intermediate shape -- confirmed live: without this, EVERY case under
+    the (now-default) v2 schema scored 0% predicate precision/recall
+    regardless of real accuracy, because `out.filters` is always empty
+    before this step runs."""
+    from app.core import service, taxonomy
+    from app.models.schemas import Filter
+
+    active_terms = taxonomy.active_filter_terms(
+        [Filter(**f) for f in current_filters]
+    )
+    resolved, _skip_notes = taxonomy.resolve_filters(out, query, active_terms)
+    expanded, _note = service._repair_resolved_filters(resolved, query)
+    expanded, _note2 = service._collapse_same_field_or_pairs(expanded, query)
+    return expanded
+
+
 def run_live(cases: list[Case]) -> list[CaseResult]:
     from app.llm.client import LLMClient  # noqa: E402
 
@@ -99,6 +124,10 @@ def run_live(cases: list[Case]) -> list[CaseResult]:
         print(f"  [{i}/{len(cases)}] {c.id}: {c.query!r}", file=sys.stderr)
         try:
             out = client.translate(c.query, c.current_filters, c.history or None)
+            if getattr(client, "prompt_schema", "v1") == "v2":
+                out = out.model_copy(update={
+                    "filters": _resolve_v2_filters(out, c.query, c.current_filters),
+                })
             predicted = _llm_output_to_dict(out)
             results.append(score_case(c, predicted))
         except Exception as exc:  # noqa: BLE001 -- report, don't abort the run

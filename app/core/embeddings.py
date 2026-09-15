@@ -145,10 +145,32 @@ class EmbeddingCache:
             self._buf = grown
 
     # ---- public API ------------------------------------------------------
-    def embed(self, texts: list[str], progress: str | None = None) -> np.ndarray:
+    def embed(self, texts: list[str], progress: str | None = None,
+              task: str | None = None) -> np.ndarray:
         """(len(texts), dim) float32 matrix in input order. Cache hits are
         free; misses are embedded in batches and persisted before returning.
-        Texts repeated within one call are embedded once."""
+        Texts repeated within one call are embedded once.
+
+        `task`: "search_query" or "search_document", nomic-embed-text's own
+        documented asymmetric-retrieval convention -- the model expects a
+        literal "search_query: "/"search_document: " prefix distinguishing
+        which role a text plays, and scores noticeably worse without it.
+        Confirmed live, this exact bug: without prefixes, a real match
+        ("candidate with an SMS Banking app" against a "payment system"
+        search) scored LOWER (0.603) than a same-candidate-pool false
+        positive (0.606, an unrelated order-processing system) -- with
+        prefixes, the real match correctly outscored it (0.625 vs 0.604).
+        Leave `task=None` (default) for anything that ISN'T asymmetric
+        query-vs-document retrieval -- e.g. experience_classifier.py's
+        sentence-to-anchor similarity is a different comparison shape this
+        convention wasn't designed for, and semantic.py's skill matching
+        uses a completely different model (all-minilm) that has no such
+        convention at all. A prefixed text hashes to a different cache key
+        than its unprefixed form (see `_key`), which is correct: it's
+        genuinely different input to the model, not the same text cached
+        under two names."""
+        if task:
+            texts = [f"{task}: {t}" for t in texts]
         if not texts:
             return np.zeros((0, self._dim or 1), dtype=np.float32)
         keys = [_key(self.model, t) for t in texts]

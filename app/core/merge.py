@@ -26,13 +26,66 @@ _FIELD_ICON = {
 }
 
 
+# Years-based fields where "which one wins on conflict" should mean
+# "whichever is the stricter, more-experienced requirement", not "whichever
+# was stated most recently" -- see _stronger_experience_filter's docstring
+# for the real, reported case this fixes. Deliberately narrow: tier/ordinal
+# fields (company_tier, education, ...) and non-experience numeric fields
+# (notice_period, employment_gap_months) keep the plain last-write-wins
+# behavior below, since "actually, 30 days notice instead of 60" is a
+# genuine override the recruiter stated on purpose, not stale carryover.
+_EXPERIENCE_YEAR_FIELDS = {"experience", "skill_experience", "domain_experience"}
+
+
+def _stronger_experience_filter(old: Filter, new: Filter) -> Filter:
+    """Real, reported live bug: a flat `experience >= 0` left over from an
+    earlier, unrelated turn survived untouched (different mechanism, same
+    key never gets re-touched) right alongside a NEW turn's much stronger
+    "senior" requirement, displaying as a nonsensical "Experience >= 0 yrs"
+    chip alongside "(Experience >= 7 AND <= 12) OR Senior title" -- because
+    plain last-write-wins only fires when the SAME key is re-stated, and
+    even when it does fire (e.g. two `experience gte` values across turns,
+    with nothing in between to explain why one should beat the other), origin
+    order is a meaningless tie-breaker for "how many years of experience is
+    actually required" -- picking the answer that asks for MORE experience
+    is always at least as correct as picking the one that just happens to be
+    newest, and strictly safer against silently under-matching after a stale
+    filter's carried-over minimum quietly override a just-stated stronger one.
+
+    Only reconciles two filters that are directionally comparable (same
+    operator, a plain numeric value on both sides) -- `gte` keeps the LARGER
+    value (require at least as many years as the stricter of the two asks),
+    `lte` keeps the SMALLER value (the tighter of the two ceilings), by the
+    same "stricter wins" principle mirrored in the other direction. Anything
+    else (mismatched operators, gt/lt, a non-numeric value) has no single
+    correct comparison -- falls through to the caller's normal newest-wins
+    behavior instead of guessing."""
+    if old.operator != new.operator or old.operator not in ("gte", "lte"):
+        return new
+    try:
+        old_value, new_value = float(old.value), float(new.value)
+    except (TypeError, ValueError):
+        return new
+    if old.operator == "gte":
+        return new if new_value >= old_value else old
+    return new if new_value <= old_value else old
+
+
 def merge_filters(existing: list[Filter], incoming: list[Filter]) -> list[Filter]:
     """Incoming filters replace existing ones with the same key (field+skill).
     This is what makes 'actually, Bangalore instead' update rather than
-    duplicate the location filter."""
+    duplicate the location filter. Exception: two years-based experience
+    filters on the SAME key (see _EXPERIENCE_YEAR_FIELDS) don't just take
+    whichever is newest -- they resolve to whichever demands MORE experience,
+    see _stronger_experience_filter's docstring for the real bug this fixes."""
     merged: dict[tuple, Filter] = {f.key(): f for f in existing}
     for f in incoming:
-        merged[f.key()] = f
+        key = f.key()
+        prior = merged.get(key)
+        if prior is not None and f.field in _EXPERIENCE_YEAR_FIELDS:
+            merged[key] = _stronger_experience_filter(prior, f)
+        else:
+            merged[key] = f
     return list(merged.values())
 
 
