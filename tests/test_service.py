@@ -160,6 +160,31 @@ def test_skill_experience_falls_back_to_plain_skill_when_no_years_data():
     assert "Python" in resp.message
 
 
+def test_skill_experience_with_untracked_skill_degrades_to_flat_experience():
+    # Real, reported live bug (found via a 110-query domain sweep): when the
+    # skill_experience filter's named "skill" isn't a real tool or subdomain
+    # at all -- an activity/practice phrase like "leading operations teams"
+    # or "corporate legal", not a trackable named skill -- it used to hit
+    # the SAME no-years-data fallback as a real-but-undated tool (see
+    # test_skill_experience_falls_back_to_plain_skill_when_no_years_data),
+    # degrading to a literal `skill contains "leading operations teams"`
+    # filter that's close to meaningless (nobody's resume names a fake
+    # skill) while silently dropping the recruiter's explicit number. Since
+    # the term is untracked (_is_untracked_term), fall back to a flat
+    # pool-wide `experience` filter instead, preserving the number.
+    out = LLMOutput(intent="FILTER_CANDIDATES", logic="AND",
+                    filters=[Filter(field="skill_experience", operator="gte",
+                                    skill="leading operations teams", value=12)])
+    svc = make_service(out)
+    resp = svc.filter_by_query(
+        "at least 12 years leading operations teams", job_id=JOB, session_id="s1",
+    )
+    assert resp.status == "ok"
+    assert resp.filters == [Filter(field="experience", operator="gte", value=12)]
+    assert "isn't specific enough to scope a years-of-experience filter" in resp.message
+    assert "leading operations teams" in resp.message
+
+
 def test_incomplete_skill_experience_is_repaired_before_the_no_years_data_fallback():
     # Real, reproduced live (3 phrasings, originally with "DevOps" -- see
     # test_skill_matching_a_position_reclassifies_to_domain for why a

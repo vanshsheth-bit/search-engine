@@ -117,6 +117,10 @@ def filter_candidates(req: FilterRequest) -> FilterResponse:
         "REQUEST /ai/candidates/filter query=%r start=%s end-to-end=%.2fs status=%s",
         req.query, t0_wall, elapsed, resp.status,
     )
+    # Plain, simple console line for at-a-glance timing -- the logger.info
+    # line above carries the same info but gets buried among the verbose
+    # per-request LLM/VALIDATE/APPLY_SPEC log lines above it.
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] \"{req.query}\" -> {elapsed:.2f}s")
     return resp
 
 

@@ -279,21 +279,55 @@ def test_validation_coerces_numeric_string():
     assert res.filters[0].value == 3
 
 
-def test_validation_requires_skill_for_skill_experience():
+def test_skill_experience_with_no_skill_degrades_to_flat_experience():
+    # Real, reported live bug: a years-of-experience clause with no clear
+    # anchor skill ("at least 10 years of experience") used to be dropped
+    # entirely here, silently losing the recruiter's explicit number. Now
+    # degrades to a flat, pool-wide `experience` filter instead -- see
+    # validate_filters' own comment on this exact case.
     res = validate_filters(
         [Filter(field="skill_experience", operator="gte", value=3)]
     )
-    assert res.ok is False
+    assert res.ok is True
+    assert len(res.filters) == 1
+    assert res.filters[0].field == "experience"
+    assert res.filters[0].operator == "gte"
+    assert res.filters[0].value == 3
+    assert res.converted
 
 
-def test_validation_requires_skill_for_domain_experience():
+def test_domain_experience_with_no_skill_degrades_to_flat_experience():
     # domain_experience reuses `skill` generically as "the named target this
     # number refers to" (a domain/subdomain name here, not a skill) -- see
-    # vocabulary.SKILL_SCOPED_FIELDS.
+    # vocabulary.SKILL_SCOPED_FIELDS. Same degrade-not-drop fix as
+    # skill_experience above.
     res = validate_filters(
         [Filter(field="domain_experience", operator="gte", value=2)]
     )
-    assert res.ok is False
+    assert res.ok is True
+    assert len(res.filters) == 1
+    assert res.filters[0].field == "experience"
+    assert res.filters[0].value == 2
+    assert res.converted
+
+
+def test_skill_experience_with_generic_filler_skill_degrades_to_flat_experience():
+    # Real, reported live bug: the LLM sometimes fills a skill_experience
+    # filter's `skill` with a generic word describing the experience itself
+    # ("experience", "expertise") rather than naming a real skill -- e.g.
+    # "at least 10 years of experience" parsed as
+    # skill_experience(skill="experience"). Previously this SURVIVED
+    # validation (skill was non-empty) and later degraded into a near-
+    # useless literal `skill contains "experience"` filter, losing the
+    # number. Caught the same way as the no-skill-at-all case.
+    res = validate_filters(
+        [Filter(field="skill_experience", operator="gte", value=10, skill="experience")]
+    )
+    assert res.ok is True
+    assert len(res.filters) == 1
+    assert res.filters[0].field == "experience"
+    assert res.filters[0].value == 10
+    assert res.converted
 
 
 def test_domain_experience_availability_probes_domain_field():
@@ -560,3 +594,36 @@ def test_seniority_band_or_gate_admits_either_years_or_title_signal():
     # band) -- proving this is a real EITHER-signal OR, not an accidental AND.
     assert names == {"YearsOnlyMatch", "TitleOnlyMatch"}
     assert "NeitherMatch" not in names
+
+
+def test_tier_rank_recognizes_numeric_tier_phrasing():
+    # Real, reported live bug found via a 20-case edge sweep: "PhD from a
+    # Tier 1 university" produced a college_tier filter whose value was left
+    # as the literal string "Tier 1" -- unrecognized by the plain
+    # Low/Medium/High scale, so it silently matched nobody. Tier 1 is the
+    # BEST tier (-> High/rank 3), Tier 3 the worst (-> Low/rank 1).
+    from app.core.vocabulary import tier_rank
+    assert tier_rank("Tier 1") == 3
+    assert tier_rank("tier1") == 3
+    assert tier_rank("T1") == 3
+    assert tier_rank("Tier 2") == 2
+    assert tier_rank("Tier 3") == 1
+    assert tier_rank("High") == 3  # plain Low/Medium/High scale still works
+    assert tier_rank("Elite") is None  # a genuinely unrecognized value
+
+
+def test_numeric_tier_filter_value_matches_real_tier_candidate():
+    # End-to-end: a college_tier filter carrying "Tier 1" (as the LLM
+    # produced live, instead of "High") must still match a real candidate
+    # whose own college_tier is "High" -- proving the fix works through
+    # engine.py's rank-based comparison, not just the vocabulary helper.
+    candidates = [
+        {"id": "c1", "name": "TopTier", "college_tier": "High"},
+        {"id": "c2", "name": "MidTier", "college_tier": "Medium"},
+        {"id": "c3", "name": "LowTier", "college_tier": "Low"},
+    ]
+    spec = FilterSpec(logic="AND", filters=[
+        Filter(field="college_tier", operator="gte", value="Tier 1"),
+    ])
+    out = apply_spec(candidates, spec)
+    assert {c["name"] for c in out} == {"TopTier"}

@@ -36,6 +36,24 @@ from app.models.schemas import Filter, LLMOutput, StructuredItem, ToolItem
 # not catch hallucinated ones.
 _GROUNDABLE_VALUE_FIELD_TYPES = {"string", "ordinal"}
 
+# Real, reported live bug found via a 20-case edge/mechanism sweep:
+# college_tier/company_tier ARE "ordinal" (see _GROUNDABLE_VALUE_FIELD_TYPES
+# above) but their canonical values are a fixed Low/Medium/High scale that a
+# recruiter essentially never types literally -- they say "top-tier
+# university", "Tier 1 companies", "premier", "reputed", never the word
+# "High" itself. When the model (wrongly) omits raw_text for one of these
+# two fields, the value-fallback grounding check below was comparing
+# "High"/"Low" against query text that could never contain it by
+# construction, silently dropping a completely legitimate filter as if it
+# were the SAME kind of hallucination the fallback was built to catch (a
+# company_type value with zero relation to garbled query text) -- confirmed
+# live: "a top-tier university, not Infosys or TCS" and "PhD from a Tier 1
+# university" both lost the tier requirement entirely this way. `education`
+# stays in the general ordinal fallback (its own canonical values --
+# "Bachelor's", "Master's", "PhD" -- DO appear at or near verbatim in real
+# recruiter text), only these two are excluded.
+_TIER_VALUE_NEVER_LITERAL_FIELDS = {"college_tier", "company_tier"}
+
 
 def _mentioned_in_query(term: str, query: str) -> bool:
     """Case-insensitive check that `term` actually appears in `query`.
@@ -77,6 +95,8 @@ def _grounding_terms(item: StructuredItem) -> list[str]:
         return [item.raw_text]
     if item.field in ("skill_experience", "domain_experience") and item.skill:
         return [item.skill]
+    if item.field in _TIER_VALUE_NEVER_LITERAL_FIELDS:
+        return []
     if FIELD_TYPES.get(item.field) not in _GROUNDABLE_VALUE_FIELD_TYPES:
         return []
     values = item.value if isinstance(item.value, list) else [item.value]

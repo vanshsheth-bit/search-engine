@@ -159,6 +159,45 @@ FEW_SHOTS_V2 = [
                   {"raw_text": "LangChain", "match_mode": "exact", "hard": True}]},
     ),
     (
+        # CONFIRMED LIVE FAILURE, do not repeat it: this query named SIX
+        # distinct requirements after the umbrella phrase "healthcare
+        # applications" (EHR, patient management systems, HIPAA compliance,
+        # medical data processing, healthcare APIs, clinical workflows) --
+        # every single one got dropped, leaving ONLY the domain filter
+        # ("healthcare" itself). Same failure family as the AI/ML and AI
+        # engineer few-shots above (a long, comma-heavy list of named
+        # things after an umbrella phrase), but this model needs its own
+        # worked example per sentence shape rather than generalizing from
+        # those -- confirmed here too. "healthcare applications" itself
+        # still resolves to the `domain` field exactly as before (a real,
+        # already-working part of this query -- keep it); "electronic
+        # health records" and "patient management systems" both use
+        # match_mode="expand" (a real practice area covered by several EHR
+        # products -- Epic, Cerner, MEDITECH -- not a single specific tool,
+        # exactly rule 2's "expand" case); the remaining four (HIPAA
+        # compliance, medical data processing, healthcare APIs, clinical
+        # workflows) are each real, specific things a recruiter can
+        # legitimately ask about that name no single tracked product --
+        # match_mode="exact" extracts them as their own literal terms
+        # (letting the untracked-term literal/semantic-fallback machinery
+        # handle each one honestly) rather than silently discarding them
+        # the way "AI/ML applications" itself (a phrase naming no
+        # trackable thing at all) correctly is discarded.
+        "CURRENT FILTERS: []\nNEW QUERY: Find candidates with experience developing "
+        "healthcare applications involving electronic health records, patient "
+        "management systems, HIPAA compliance, medical data processing, healthcare "
+        "APIs, and clinical workflows.",
+        {"intent": "FILTER_CANDIDATES", "replace_all": True,
+         "structured": [{"field": "domain", "operator": "contains",
+                         "raw_text": "healthcare", "value": "healthcare", "hard": True}],
+         "tools": [{"raw_text": "electronic health records", "match_mode": "expand", "hard": True},
+                  {"raw_text": "patient management systems", "match_mode": "expand", "hard": True},
+                  {"raw_text": "HIPAA compliance", "match_mode": "exact", "hard": True},
+                  {"raw_text": "medical data processing", "match_mode": "exact", "hard": True},
+                  {"raw_text": "healthcare APIs", "match_mode": "exact", "hard": True},
+                  {"raw_text": "clinical workflows", "match_mode": "exact", "hard": True}]},
+    ),
+    (
         # A cloud/platform name used as something the candidate WORKED WITH
         # is a tool, never a company.
         "CURRENT FILTERS: []\nNEW QUERY: Deployed services on AWS and Azure.",
@@ -548,6 +587,17 @@ RULES
     `options`. Do NOT guess -- this applies even when a number seems like a \
     "reasonable default." Anything else genuinely unclear goes in \
     `ambiguities` as one short question each -- never guess silently. \
+    `options` is ONLY valid alongside intent "CLARIFY" -- CONFIRMED LIVE \
+    FAILURE, do not repeat it: a long list of real, distinct requirements \
+    in a FILTER_CANDIDATES query (e.g. "electronic health records, patient \
+    management systems, HIPAA compliance, medical data processing, \
+    healthcare APIs, and clinical workflows") got listed correctly but \
+    placed in `options` instead of `tools` -- intent stayed \
+    "FILTER_CANDIDATES", so every one of those six real requirements was \
+    silently ignored downstream (`options` is never read for that intent). \
+    Every concrete thing a recruiter names to filter BY -- however many, \
+    however long the list -- is a `tools` item (or a `structured` item for \
+    a real field), never `options`, regardless of intent. \
     Whenever the CLARIFY reduces to a threshold on ONE real field, also set \
     `clarify_field`/`clarify_operator` so a bare numeric reply next turn can \
     be resolved without asking you again.

@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import time
+from contextlib import contextmanager
 from functools import lru_cache
 
 from app.core.candidates import (
@@ -45,6 +47,21 @@ from app.models.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _timed_step(label: str):
+    """Prints one plain `  step: label -> X.XXs` console line for a pipeline
+    phase -- separate from the logger.info calls around it (which carry more
+    detail but get buried in per-request log volume), so a slow query's time
+    can be read step-by-step at a glance instead of only as one end-to-end
+    number (see main.py's own per-request timing line)."""
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        print(f"  step: {label} -> {time.perf_counter() - t0:.2f}s")
+
 
 _NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
@@ -1325,9 +1342,10 @@ class FilterService:
             # clarification and fall through to a fresh query below.
 
         history_msgs = [t.model_dump() for t in current.history]
-        llm_out: LLMOutput = self.llm.translate(
-            query, [f.model_dump(exclude_none=True) for f in spec.filters], history_msgs
-        )
+        with _timed_step("LLM translate"):
+            llm_out: LLMOutput = self.llm.translate(
+                query, [f.model_dump(exclude_none=True) for f in spec.filters], history_msgs
+            )
         if debug_info is not None:
             debug_info["llm_out"] = llm_out.model_dump(exclude_none=True)
 
@@ -1454,43 +1472,44 @@ class FilterService:
         replace_all = llm_out.replace_all and not _query_signals_narrowing(query)
 
         skip_notes: list[str] = []
-        if getattr(self.llm, "prompt_schema", "v1") == "v2":
-            resolved_filters, skip_notes = taxonomy.resolve_filters(
-                llm_out, query, taxonomy.active_filter_terms(spec.filters),
+        with _timed_step("resolve+repair (taxonomy)"):
+            if getattr(self.llm, "prompt_schema", "v1") == "v2":
+                resolved_filters, skip_notes = taxonomy.resolve_filters(
+                    llm_out, query, taxonomy.active_filter_terms(spec.filters),
+                )
+            else:
+                resolved_filters = expand_skill_filters(llm_out.filters)
+            expanded_filters, domain_reclass_note = _repair_resolved_filters(resolved_filters, query)
+            expanded_filters, or_collapse_note = _collapse_same_field_or_pairs(expanded_filters, query)
+
+            # A real, unrelated alternative_groups statement -- this turn's own,
+            # or an earlier turn's still-active one that would otherwise survive
+            # -- means a seniority band's own OR-of-routes can't safely be
+            # expanded into a SECOND set of alternative_groups: FilterSpec.
+            # alternative_groups is one flat, non-nested OR-level (see
+            # AlternativeGroup's docstring) and cannot express "(OR-set A) AND
+            # (OR-set B)" -- see _expand_seniority_filters' own docstring for the
+            # full reasoning, including the merge_alternative_groups wholesale-
+            # replace hazard for the carried-over case.
+            degrade_seniority_to_years_only = bool(llm_out.alternative_groups) or (
+                bool(spec.alternative_groups) and not replace_all
             )
-        else:
-            resolved_filters = expand_skill_filters(llm_out.filters)
-        expanded_filters, domain_reclass_note = _repair_resolved_filters(resolved_filters, query)
-        expanded_filters, or_collapse_note = _collapse_same_field_or_pairs(expanded_filters, query)
+            expanded_filters, seniority_groups, seniority_note = _expand_seniority_filters(
+                expanded_filters, degrade_seniority_to_years_only,
+            )
 
-        # A real, unrelated alternative_groups statement -- this turn's own,
-        # or an earlier turn's still-active one that would otherwise survive
-        # -- means a seniority band's own OR-of-routes can't safely be
-        # expanded into a SECOND set of alternative_groups: FilterSpec.
-        # alternative_groups is one flat, non-nested OR-level (see
-        # AlternativeGroup's docstring) and cannot express "(OR-set A) AND
-        # (OR-set B)" -- see _expand_seniority_filters' own docstring for the
-        # full reasoning, including the merge_alternative_groups wholesale-
-        # replace hazard for the carried-over case.
-        degrade_seniority_to_years_only = bool(llm_out.alternative_groups) or (
-            bool(spec.alternative_groups) and not replace_all
-        )
-        expanded_filters, seniority_groups, seniority_note = _expand_seniority_filters(
-            expanded_filters, degrade_seniority_to_years_only,
-        )
-
-        # Each AlternativeGroup's filters are ALREADY v1-shaped/resolved by
-        # construction (see AlternativeGroup's docstring) regardless of
-        # whether the main query used v1 or v2 -- they only need the same
-        # repair tail, not a taxonomy/expand_skill_filters resolution pass.
-        repaired_groups: list[AlternativeGroup] = []
-        group_reclass_notes: list[str] = []
-        for g in llm_out.alternative_groups:
-            repaired, note = _repair_resolved_filters(g.filters, query)
-            repaired_groups.append(AlternativeGroup(filters=repaired))
-            if note:
-                group_reclass_notes.append(note)
-        repaired_groups.extend(seniority_groups)
+            # Each AlternativeGroup's filters are ALREADY v1-shaped/resolved by
+            # construction (see AlternativeGroup's docstring) regardless of
+            # whether the main query used v1 or v2 -- they only need the same
+            # repair tail, not a taxonomy/expand_skill_filters resolution pass.
+            repaired_groups: list[AlternativeGroup] = []
+            group_reclass_notes: list[str] = []
+            for g in llm_out.alternative_groups:
+                repaired, note = _repair_resolved_filters(g.filters, query)
+                repaired_groups.append(AlternativeGroup(filters=repaired))
+                if note:
+                    group_reclass_notes.append(note)
+            repaired_groups.extend(seniority_groups)
 
         extra_message = " ".join(
             m for m in (llm_out.message, *skip_notes, domain_reclass_note,
@@ -1875,10 +1894,11 @@ class FilterService:
         alternative_groups: list[AlternativeGroup] | None = None,
     ) -> FilterResponse:
         available = get_available_fields(job_id)
-        result = validate_filters(filters, available)
-        validated_groups, group_notes = validate_alternative_groups(
-            alternative_groups or [], available,
-        )
+        with _timed_step("validate"):
+            result = validate_filters(filters, available)
+            validated_groups, group_notes = validate_alternative_groups(
+                alternative_groups or [], available,
+            )
         extra_message = " ".join(m for m in (extra_message, *group_notes) if m) or None
         history = history if history is not None else []
         logger.info(
@@ -1932,27 +1952,58 @@ class FilterService:
         if undated:
             converted = list(spec.filters)
             skills_named = []
+            # Real, reported live bug found via a 110-query domain sweep: an
+            # undated skill_experience whose named "skill" isn't actually a
+            # tracked tool or subdomain at all (e.g. "leading operations
+            # teams", "corporate legal" -- an activity/practice phrase, not
+            # a real named skill) degraded the SAME way as a real-but-
+            # undated tool (e.g. "Node.js" with no years text) -- losing
+            # the recruiter's explicit number either way, but for an
+            # untracked term the literal "has this skill" fallback search
+            # is close to meaningless too (nobody's resume names a fake
+            # skill). Preserve the number instead by falling back to a flat
+            # pool-wide `experience` filter for THESE specifically, same
+            # "can't scope it -> years-only" pattern as the unscoped-filter
+            # fix in validate_filters. A real, merely-undated tool keeps the
+            # existing behavior (drop years, keep the literal skill search)
+            # since that's still a meaningful, trackable qualitative filter.
+            untracked_names = []
             for i in undated:
                 f = converted[i]
-                skills_named.append(f.skill)
-                converted[i] = Filter(field="skill", operator="contains", value=f.skill, hard=f.hard)
+                if _is_untracked_term(f.skill):
+                    untracked_names.append(f.skill)
+                    converted[i] = Filter(
+                        field="experience", operator=f.operator, value=f.value, hard=f.hard,
+                    )
+                else:
+                    skills_named.append(f.skill)
+                    converted[i] = Filter(field="skill", operator="contains", value=f.skill, hard=f.hard)
             spec = FilterSpec(logic=spec.logic, filters=converted,
                                alternative_groups=spec.alternative_groups)
-            names = " / ".join(dict.fromkeys(skills_named))
-            note = (
-                f"This data doesn't reliably track years spent on {names} specifically "
-                f"(only total career years, plus real per-skill years where a resume's own "
-                f"job description happens to name the tool) -- showing everyone with "
-                f"{names} instead."
-            )
-            extra_message = " ".join(m for m in (extra_message, note) if m)
+            notes = []
+            if skills_named:
+                names = " / ".join(dict.fromkeys(skills_named))
+                notes.append(
+                    f"This data doesn't reliably track years spent on {names} specifically "
+                    f"(only total career years, plus real per-skill years where a resume's own "
+                    f"job description happens to name the tool) -- showing everyone with "
+                    f"{names} instead."
+                )
+            if untracked_names:
+                names = " / ".join(dict.fromkeys(untracked_names))
+                notes.append(
+                    f'"{names}" isn\'t specific enough to scope a years-of-experience filter '
+                    f"to -- using total years of experience instead."
+                )
+            extra_message = " ".join(m for m in (extra_message, *notes) if m)
 
         # `spec` (hard+soft) is what gets persisted/rendered as chips below
         # -- only the actual inclusion/exclusion decision uses the
         # hard-only view, so a soft (schema_v2 "nice to have") filter never
         # excludes anyone, per Filter.hard's contract.
         hard_spec = _hard_only(spec)
-        filtered = apply_spec(candidates, hard_spec)
+        with _timed_step("apply_spec"):
+            filtered = apply_spec(candidates, hard_spec)
         logger.info(
             "APPLY_SPEC job_id=%s pool=%d logic=%s exact_matches=%d names=%s",
             job_id, len(candidates), spec.logic, len(filtered),
@@ -1969,26 +2020,28 @@ class FilterService:
         # they matched and what they didn't (partial_skill_match), so the
         # recruiter sees and judges them instead of the system hiding a
         # possibly-relevant person.
-        full_extra, partial = self._fuzzy_skill_matches(
-            job_id, hard_spec, matched_ids={c.get("id") for c in filtered},
-        )
-        # Same widening, reaching into alternative_groups branches too (see
-        # _fuzzy_alternative_group_matches) -- a separate pass because a
-        # route has no partial-credit tier, only full-match-or-not.
-        full_extra = full_extra + self._fuzzy_alternative_group_matches(
-            job_id, hard_spec,
-            matched_ids={c.get("id") for c in filtered} | {c.get("id") for c in full_extra},
-        )
+        with _timed_step("fuzzy_skill_matches"):
+            full_extra, partial = self._fuzzy_skill_matches(
+                job_id, hard_spec, matched_ids={c.get("id") for c in filtered},
+            )
+            # Same widening, reaching into alternative_groups branches too (see
+            # _fuzzy_alternative_group_matches) -- a separate pass because a
+            # route has no partial-credit tier, only full-match-or-not.
+            full_extra = full_extra + self._fuzzy_alternative_group_matches(
+                job_id, hard_spec,
+                matched_ids={c.get("id") for c in filtered} | {c.get("id") for c in full_extra},
+            )
         # Widen an untracked domain/skill term (no known tool, no known
         # subdomain -- see _is_untracked_term) by searching real job-history
         # text for a literal mention of it, instead of only checking a
         # tracked field the term was never going to be found in (see
         # _experience_text_matches). Stays completely silent when nothing
         # is found, same as before this existed.
-        text_extra, text_terms_found, possible_extra, possible_terms_found = self._experience_text_matches(
-            job_id, hard_spec,
-            matched_ids={c.get("id") for c in filtered} | {c.get("id") for c in full_extra},
-        )
+        with _timed_step("experience_text_matches"):
+            text_extra, text_terms_found, possible_extra, possible_terms_found = self._experience_text_matches(
+                job_id, hard_spec,
+                matched_ids={c.get("id") for c in filtered} | {c.get("id") for c in full_extra},
+            )
         # Real, reported live bug: a candidate missing ONLY an untracked
         # term (e.g. "cloud technologies") sat in `partial` from
         # _fuzzy_skill_matches (which has nothing in the taxonomy to ever
@@ -2142,12 +2195,19 @@ class FilterService:
             "Couldn't apply: " + "; ".join(result.skipped) + "."
             if result.skipped else None
         )
+        # result.converted: a filter that was NOT dropped, just silently
+        # rewritten (e.g. an unscoped years-of-experience clause degraded to
+        # a flat `experience` filter -- see validate_filters). Each note is
+        # already a full, honest sentence on its own, so it's joined in
+        # directly rather than wrapped in skip_note's "Couldn't apply:"
+        # framing, which would contradict a filter that DID apply.
+        converted_note = ". ".join(result.converted) + "." if result.converted else None
         # extra_message: the LLM's own note about a concept it recognized as
         # unsupported but has no ALLOWED_FIELDS equivalent to even express as
         # a droppable Filter (e.g. "product-based vs service-based") -- see
         # prompt.py's compound-query rule. Merged with skip_note so both
         # sources of "here's what couldn't be applied" reach the recruiter.
-        skip_note = " ".join(m for m in (extra_message, skip_note) if m) or None
+        skip_note = " ".join(m for m in (extra_message, converted_note, skip_note) if m) or None
         logger.info(
             "RESULT job_id=%s status=%s total=%d showing=%d skip_note=%r",
             job_id, "no_match" if not filtered else "ok",

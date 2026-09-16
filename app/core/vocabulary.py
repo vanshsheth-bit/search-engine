@@ -243,11 +243,26 @@ def seniority_band(text: str | None) -> str | None:
 _TIER_RANK = {"low": 1, "medium": 2, "high": 3}
 TIER_LABELS = {1: "Low", 2: "Medium", 3: "High"}
 
+# Common numeric-tier phrasing a recruiter actually types ("Tier 1 company",
+# "T1 college") -- Tier 1 is the BEST/most prestigious tier (-> High/rank 3),
+# Tier 3 the worst (-> Low/rank 1), the opposite of a plain "1 < 3" reading.
+# Real, reported live bug found via a 20-case edge sweep: "PhD from a Tier 1
+# university" produced a filter with its VALUE left as the literal string
+# "Tier 1" (never translated to "High") -- unrecognized by _TIER_RANK above,
+# it silently matched nobody in engine.py's rank comparison instead of
+# resolving to the top tier, with no error or note at all.
+_NUMERIC_TIER_ALIASES = {
+    "tier 1": 3, "tier1": 3, "tier-1": 3, "t1": 3,
+    "tier 2": 2, "tier2": 2, "tier-2": 2, "t2": 2,
+    "tier 3": 1, "tier3": 1, "tier-3": 1, "t3": 1,
+}
+
 
 def tier_rank(text: str | None) -> int | None:
     if not text:
         return None
-    return _TIER_RANK.get(str(text).strip().lower())
+    key = str(text).strip().lower()
+    return _TIER_RANK.get(key, _NUMERIC_TIER_ALIASES.get(key))
 
 
 # Both fields share one rank scale -- one function, two names for clarity

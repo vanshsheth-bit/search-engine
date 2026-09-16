@@ -42,6 +42,14 @@ class ValidationResult:
     # than silently swallowed, so "8+ years, Kubernetes, and relocating" still
     # returns matches for the two real filters instead of nothing.
     skipped: list[str] = dc_field(default_factory=list)
+    # Per-filter notes for a filter that was NOT dropped, but silently
+    # rewritten into a different (still-real) filter -- e.g. an unscoped
+    # years-of-experience clause degraded to a flat `experience` filter (see
+    # the SKILL_SCOPED_FIELDS check below). Kept separate from `skipped`
+    # because the caller's "Couldn't apply: ..." framing for skipped would
+    # be actively wrong here -- the filter DID apply, just not to the exact
+    # skill/domain named.
+    converted: list[str] = dc_field(default_factory=list)
 
 
 def _coerce_value(f: Filter, expected_type: str) -> Filter:
@@ -208,6 +216,7 @@ def validate_filters(
     if any drop reason was "not available" rather than "malformed")."""
     validated: list[Filter] = []
     skipped: list[str] = []
+    converted: list[str] = []
     any_unsupported = False
 
     for f in filters:
@@ -277,11 +286,43 @@ def validate_filters(
             skipped.append(f"that comparison doesn't make sense for {label}")
             continue
 
-        if f.field in SKILL_SCOPED_FIELDS and not f.skill:
-            skipped.append(
-                "I need to know which skill or domain a years-of-experience filter applies to"
-            )
-            continue
+        # Real, reported live bug: a years-of-experience clause with no
+        # clear anchor skill/domain ("at least 12 years of leadership
+        # experience", "10 years of experience", "8 years managing
+        # editorial teams") either arrived with `skill` empty, or with the
+        # LLM filling `skill` with a generic filler word/phrase describing
+        # the experience itself rather than naming a real skill (e.g.
+        # `skill="experience"`, `skill="leading operations teams"`) --
+        # confirmed live via a 110-query domain sweep, ~6 compound queries
+        # silently lost the recruiter's explicit number entirely (dropped
+        # here with no skill, or later degraded by the undated-skill path
+        # in service.py into a near-useless literal skill/domain-text
+        # search with the number thrown away). The number itself is real
+        # recruiter intent and the single most concrete part of the
+        # clause -- degrading to a flat, pool-wide `experience` filter
+        # (same operator/value) preserves it instead of losing it, mirroring
+        # the seniority-band code's own "can't scope it -> fall back to
+        # years-only" pattern rather than this field's previous "can't
+        # scope it -> drop the whole thing" one.
+        if f.field in SKILL_SCOPED_FIELDS and (
+            not f.skill or f.skill.strip().lower() in GENERIC_SKILL_FILLER_WORDS
+        ):
+            vague_term = f.skill.strip() if f.skill else None
+            f.field = "experience"
+            f.skill = None
+            if vague_term:
+                converted.append(
+                    f'"{vague_term}" isn\'t specific enough to scope a '
+                    f"years-of-experience filter to -- using total years of "
+                    f"experience instead"
+                )
+            else:
+                converted.append(
+                    "didn't say which skill or domain a years-of-experience "
+                    "filter applies to -- using total years of experience instead"
+                )
+            label = FIELD_LABELS.get(f.field, f.field)
+            expected_type = FIELD_TYPES[f.field]
 
         if (
             f.field in NAME_FIELDS
@@ -373,7 +414,7 @@ def validate_filters(
             msg += "."
         return ValidationResult(ok=False, unsupported=any_unsupported, error=msg)
 
-    return ValidationResult(ok=True, filters=validated, skipped=skipped)
+    return ValidationResult(ok=True, filters=validated, skipped=skipped, converted=converted)
 
 
 def validate_alternative_groups(

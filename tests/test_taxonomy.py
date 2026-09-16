@@ -215,3 +215,42 @@ def test_no_raw_text_fallback_skips_numeric_and_boolean_fields():
     filters, skip_notes = resolve_filters(out, "someone with five years of experience, open to relocating")
     assert {f.field for f in filters} == {"experience", "relocation"}
     assert skip_notes == []
+
+
+def test_tier_fields_never_grounded_on_their_own_low_medium_high_value():
+    # Real, reported live bug found via a 20-case edge sweep: college_tier/
+    # company_tier ARE "ordinal" (same bucket as education, which the
+    # general value-fallback grounding above is fine for), but their
+    # canonical values are a fixed Low/Medium/High scale a recruiter never
+    # actually types -- they say "top-tier university"/"Tier 1 companies",
+    # never the literal word "High". With raw_text omitted, the general
+    # ordinal fallback compared "High" against query text that could never
+    # contain it, dropping a completely legitimate filter as if it were the
+    # same kind of hallucination company_type's own fallback (tested above)
+    # exists to catch. Confirmed live: "a top-tier university, not Infosys
+    # or TCS" lost the tier requirement entirely this way.
+    out = LLMOutput(intent="FILTER_CANDIDATES",
+                    structured=[StructuredItem(field="college_tier", operator="equals",
+                                               value="High", hard=True)])
+    filters, skip_notes = resolve_filters(out, "someone from a top-tier university")
+    assert len(filters) == 1
+    assert filters[0].field == "college_tier"
+    assert skip_notes == []
+
+    out2 = LLMOutput(intent="FILTER_CANDIDATES",
+                     structured=[StructuredItem(field="company_tier", operator="equals",
+                                                value="High", hard=True)])
+    filters2, skip_notes2 = resolve_filters(out2, "not from Tier 1 companies")
+    assert len(filters2) == 1
+    assert filters2[0].field == "company_tier"
+    assert skip_notes2 == []
+
+    # education stays in the general ordinal fallback -- its canonical
+    # values ("Master") DO appear at/near verbatim in real recruiter text,
+    # so a genuinely hallucinated one must still be caught.
+    out3 = LLMOutput(intent="FILTER_CANDIDATES",
+                     structured=[StructuredItem(field="education", operator="gte",
+                                                value="Master", hard=True)])
+    filters3, skip_notes3 = resolve_filters(out3, "someone based in Mumbai")
+    assert filters3 == []
+    assert any("Master" in note for note in skip_notes3)
